@@ -1,0 +1,3 @@
+A separate decision doc would be overkill. The **Decisions & Alternatives row already in the registry LLD is sufficient**: the kiosk’s offline constraint rules out the network-dependent options, and the backend is private to the registry with no certificate-interface impact.
+
+A full decision doc would only earn its place if the trade-offs remained genuinely live—for example, if local SQLite still competed closely with another offline backend across several consequential criteria.

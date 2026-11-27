@@ -1,0 +1,6 @@
+Done — you were right that this one earns the doc: the choice stays live in a way most rows don't.
+
+- **`docs/intent/previews/decisions/eviction-policy.md`** — full decision doc: scan resistance and project-switch adaptation as the major criteria, bookkeeping and tuning as moderate; each option given its strongest honest case; selection names what 2Q obligates (two queue memberships, A1-share tuning) and forecloses, with the tenets it turns on.
+- The LLD's Decisions row now links to it.
+
+Still holding at the Phase 2 stop for your triage of the probe gaps: **promotion overflow** (eviction trigger when a promotion pushes A2 over its share), **post-completion burst hits** (does a deduplicated miss burst count as A1 hits once the sheet lands, promoting it straight to A2?), **failed-job ticket holders**, **eviction fallback** (empty A2, share boundary), **oversized admission**, **queue-position ticket semantics**, and the **in-flight hit vs. eviction race**. Gaps 3 and 6 predate 2Q. Which do I settle in the LLD now, and which go to Open Questions?

@@ -1,0 +1,105 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..558b249 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup through a local embedded index private to this component.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..c4bbef8 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,82 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. Kiosks operate offline: both the snapshot channel and the lookup store are local to the kiosk.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. The record fields and the result types are fixed; they do not vary with the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, and lookup all belong to this node. The lookup backend is a local embedded SQLite index on the kiosk disk. Selecting it adds no certificate behavior and no change to the lookup interface.
++
++```mermaid
++flowchart LR
++  USB[Signed snapshot on USB] --> Import[Snapshot import]
++  Import -->|valid| Index[(Local SQLite index)]
++  Import -->|invalid| Reject[Reject; keep active snapshot]
++  Lookup[findBySerial] --> Index
++  Lookup --> Result[Found / NotFound + snapshotDate]
++  Certificates --> Lookup
++```
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++An import runs in four ordered stages, and no stage becomes observable until every stage succeeds.
++
++1. **Verify** the snapshot signature using the bundled public key and reject an unsupported `schemaVersion`.
++2. **Validate** every record: serial numbers must be non-empty and unique after normalization.
++3. **Build** the new index content from the snapshot records.
++4. **Activate** the new content atomically.
++
++If verification, validation, or building fails, the import is rejected, the previously active snapshot stays active, and a useful error message is reported.
++
++## Local SQLite Index
++
++The backend is a single SQLite database file in a local directory reserved for the registry. The path is kiosk configuration and is invisible to the certificates node.
++
++**Schema.**
++
++- `meta(key TEXT PRIMARY KEY, value TEXT)` — holds the active snapshot date and the snapshot schema version.
++- `equipment(serial TEXT PRIMARY KEY, calibration_date TEXT, due_date TEXT, description TEXT)` — one row per record, keyed by the normalized serial number.
++
++**Normalization is applied before storage.** Each record's serial number is trimmed and its ASCII letters uppercased as it is inserted, so the primary key is the same form the lookup path will compare against. Punctuation is preserved.
++
++**Activation is transactional.** The index runs in SQLite write-ahead-logging mode. Activation replaces the `equipment` rows and the `meta` snapshot date inside a single transaction; readers continue to see the previously active generation until the transaction commits, then see the entire new generation together. A crash or rollback before commit therefore leaves the previous snapshot active, satisfying the atomic-exposure requirement without a separate file-swap protocol.
++
++**Failure handling.** A duplicate primary key or a disk-write failure aborts the transaction; the previous snapshot remains active. A source snapshot that cannot be verified or parsed never reaches the database.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++For `findBySerial(serial)`, normalize the query the same way records are stored — trim surrounding whitespace and uppercase ASCII letters, leaving punctuation significant — then perform an exact primary-key lookup. Return `Found` with the stored record and the active snapshot date, or `NotFound` with the active snapshot date. A lookup is read-only and never blocks an in-flight import from completing.
++
++## Performance
++
++The primary-key lookup on 90,000 rows is a logarithmic index probe and runs well within the 250 ms budget on a 4 GB kiosk. Snapshot building is bounded by the 150 MB snapshot size and runs inside one transaction.
++
++## Failure and Recovery
++
++- If no snapshot is active, `findBySerial` returns `NotFound` with an empty snapshot date and the registry reports that no snapshot is loaded.
++- If the index file is missing or fails an integrity check, the registry reports the fault rather than returning a lookup result, so a technician does not act on a silently degraded store.
++
++## Portable Storage
++
++The index directory holds only the SQLite database and any transient journal files SQLite creates. No absolute path, service endpoint, or credential is part of the certificate interface.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite index on the kiosk disk | On-site HTTPS directory; managed search service | Every lookup must complete from kiosk files with no runtime network access (HLD tenet). SQLite gives predictable indexed lookups, needs no service to operate, and keeps the backend private to this node. The network options would breach the offline tenet or add an operational dependency the kiosk cannot service. |
++| Snapshot activation | Replace rows and snapshot date inside one SQLite transaction (WAL) | Build a separate index file and swap it in atomically | A transaction exposes the new snapshot all-at-once and leaves the previous one active on any failure, without a cross-platform file-swap protocol or open-handle hazards. |
++| Normalized serial as the primary key | Store the trimmed, ASCII-uppercased serial | Store raw serials and normalize only at query time | Keeping the stored key in the lookup's comparison form makes the match an exact primary-key probe and prevents normalization drift between import and lookup. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Lookup backend: local embedded SQLite index. See the Decisions & Alternatives table and the HLD's offline tenet.
++
++### Deferred
++
++1. Where the index directory is configured and how it is provisioned on a kiosk.
++2. Whether to expose index health (record count, snapshot date) outside the lookup interface.

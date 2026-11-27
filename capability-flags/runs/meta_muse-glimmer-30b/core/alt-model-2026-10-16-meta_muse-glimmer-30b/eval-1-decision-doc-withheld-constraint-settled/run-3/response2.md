@@ -1,0 +1,5 @@
+A table row in the Registry LLD is sufficient for this choice.
+
+The decision is component-scoped and is effectively constrained by the HLD tenets — all lookups must complete from files on kiosk with no runtime network. With those tenets in place, a cold reader can reconstruct why local SQLite was selected and why the on-site HTTPS and managed search options were rejected. The Decisions & Alternatives table now records the chosen approach, the alternatives considered, and the rationale.
+
+A full decision doc is warranted only when a choice remains genuinely live for a future cold reader — i.e., the reader would re-litigate it without the competing options and criteria in hand. Here the choice reads as native once the tenets and offline requirement are known, so a standalone doc would be overkill. Keep the row; create a doc only if you want to preserve a deeper tradeoff analysis for later re-evaluation.

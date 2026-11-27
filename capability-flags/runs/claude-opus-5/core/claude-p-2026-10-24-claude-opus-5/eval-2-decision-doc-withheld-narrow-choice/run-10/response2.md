@@ -1,0 +1,11 @@
+My honest read: it doesn't clear the bar, and the length of the argument is the reason I'd be most suspicious of my own yes.
+
+The test isn't "was this hard to decide," it's "once this lands, would a cold reader re-litigate it without the full tradeoffs laid out." Here, everything the three options touch stops inside the preview worker — no other node gets sized around the result, the HTTP contract and the 12 GiB budget are identical under all three. A cold reader opening the previews LLD sees 2Q's queues, thinks "why not plain LRU?", reads one row, and has the answer: the workload mixes screenings with comparison sessions, and LRU loses the comparison set to the screening. That's a row's worth of question, not a doc's.
+
+The three sub-choices are the part that actually stays live for a cold reader — no promotion on an A1in hit especially, since "optimizing" that is how you'd accidentally undo the whole policy. Those are already rows, which is where they're load-bearing: next to the mechanism they protect.
+
+What a doc would add is mostly the deliberation — the options as we argued them, scored. That's the residue the docs-carry-current-intent tenet strips, and `docs/intent/previews/decisions/` with one file in it starts a directory that tends to fill with the same.
+
+That said, it's your call and the cost is small — one file plus the upkeep of not letting it drift from the LLD. If you want it, say so and I'll write it: context from the workload rather than the thread, the three options in their strongest honest form, criteria as gates (private to the worker, no interface change, 12 GiB) plus weighted criteria (scan resistance major, bookkeeping cost moderate, adaptation after a project switch moderate), and the selection naming the keep-bookkeeping-private tenet. I'd then thin the LLD's policy row to a pointer so the two can't disagree.
+
+Either way, the Phase 2 stop is still open — the five probe gaps need triage, and the two tuning parameters need your numbers or a confirm of the 25% / ~3,000-key defaults.

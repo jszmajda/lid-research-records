@@ -1,0 +1,3 @@
+Updated the HLD to reflect the self-hosted WebSockets choice. The approach section now records the decision with rationale, the architecture section describes the three nodes with their WebSocket-specific responsibilities, and the key design decisions table includes the self-hosted WebSockets decision with its cascade effects.
+
+**STOP for your review.** Please confirm the HLD update before we proceed to drafting the three node LLDs (change-store, delivery, browser-sync).

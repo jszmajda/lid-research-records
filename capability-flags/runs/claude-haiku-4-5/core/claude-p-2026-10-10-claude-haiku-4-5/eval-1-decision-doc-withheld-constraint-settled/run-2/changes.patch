@@ -1,0 +1,93 @@
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..10942af 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,83 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Design Philosophy
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
++The registry system must work offline on air-gapped kiosks with no network access. Serial-number lookup is a hot path: technicians expect sub-second response times for frequent lookups across 90,000 records. All index data must live on local storage; the only external input is a signed USB snapshot.
++
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of storage details. The certificates node uses only this interface and does not access registry storage directly.
++
++Registry owns three responsibilities:
++1. **Snapshot validation**: Verify signature, reject unsupported schemas, validate serial-number uniqueness.
++2. **Index preparation**: Parse snapshot JSON, create a queryable index, and atomically activate it.
++3. **Lookup**: Execute queries against the active index with normalized serial numbers.
++
++## Lookup Index: SQLite
++
++The active registry is an embedded SQLite database stored as a single file on the kiosk filesystem. The index is built once per snapshot import and is queried by the lookup interface. SQLite was selected for its simplicity (no separate service to run), predictable performance (single-machine index with no network dependency), and native support for substring and case-insensitive matching without application-level logic.
++
++### Index Schema
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++```sql
++CREATE TABLE records (
++  id INTEGER PRIMARY KEY,
++  serial_number TEXT UNIQUE NOT NULL,
++  calibration_date TEXT NOT NULL,
++  due_date TEXT NOT NULL,
++  description TEXT NOT NULL
++);
++
++CREATE INDEX idx_serial ON records(serial_number COLLATE NOCASE);
++```
++
++The `NOCASE` collation allows case-insensitive matching at the database level, supporting the normalization requirement. Serial numbers are stored as-is (punctuation preserved) in the main table; lookup performs case-insensitive comparison via the collated index.
++
++### File Paths
++
++- **Active index**: `{kiosk-storage}/registry.db`
++- **Snapshot during import**: `{kiosk-storage}/registry-staging.db` (temporary)
++- **Public key** (signature verification): bundled with the registry component
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++When a new snapshot is provided:
++
++1. **Validate** the JSON structure, schema version, and signature using the bundled public key.
++2. **Check uniqueness** by reading all records and rejecting if any serial number appears more than once.
++3. **Prepare** by creating a fresh SQLite database in a staging file and inserting all records with a snapshot-date row.
++4. **Atomically activate** by swapping the staging database into place as the active index, replacing any prior index.
++5. **Report** either success with the new snapshot date or failure with a specific error, leaving the prior snapshot intact.
++
++The staging file ensures a partial import never becomes visible to queries. If import fails at any step, the staging file is discarded and the active index remains unchanged.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++When a serial-number lookup is requested:
++
++1. **Normalize** the input: strip leading and trailing whitespace, uppercase ASCII letters (A–Z → A–Z, lowercase a–z → A–Z).
++2. **Query** the SQLite index using case-insensitive comparison via the `NOCASE` collation on the indexed serial-number column.
++3. **Return** either `Found(record, snapshotDate)` if a match exists or `NotFound(snapshotDate)` if no match is found. The snapshot date is always included.
++
++Punctuation in serial numbers remains significant and is matched exactly. For example, `ABC-123` does not match `ABC123`.
++
++## Performance Characteristics
++
++SQLite with an index on serial_number and case-insensitive collation provides sub-millisecond lookup latency for typical queries on 90,000 records. The index is in-memory during the kiosk session (or file-cached by the OS), avoiding disk seeks on repeated queries. The single-file design requires no separate process or service.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite | On-site HTTPS directory, managed search service | Offline-first design eliminates network dependency and service management burden on the kiosk. Predictable performance and no external credentials or cost. Index is prepared once per import and lives entirely on local storage. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Index backend selected as SQLite for offline capability and operational simplicity.
++
++### Deferred
++1. Recovery strategy if the active index file is corrupted on disk (escalation procedure).

@@ -1,0 +1,5 @@
+I agree it earns one — that decision stays genuinely live for a cold reader (real options traded on protection-vs-bookkeeping, not one dominating), so I wrote it up.
+
+Added `docs/intent/previews/decisions/eviction-policy.md`: the three options analyzed against five criteria (comparison-sheet protection, bookkeeping cost, adaptation speed, test surface, stale-favorite retention), with 2Q selected because its protection follows from queue structure rather than from tuning a decay schedule the way frequency-aging's does. It also names what committing to 2Q forecloses (tuning the policy itself) and obligates (two-queue state, the promotion transition, tests covering the `A1`/`Am` boundary). The LLD's Decisions & Alternatives row now just links to it.
+
+Still open from before: the four 2Q-specific edge cases (intra-`Am` hits, `A1` eviction order, `Am` overflow, re-admission after eviction) — want to settle those now, or defer them into Phase 3 as open behavior EARS has to pin down?

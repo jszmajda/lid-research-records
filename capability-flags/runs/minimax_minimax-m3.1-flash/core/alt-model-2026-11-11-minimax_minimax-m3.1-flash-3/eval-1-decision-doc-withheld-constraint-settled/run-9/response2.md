@@ -1,0 +1,5 @@
+No — the decision doc isn't earned here. Judged from the landed state: the choice is settled by an inherited constraint (the HLD's offline tenet rules out both network options), it affects only the registry segment, and it reads as native in the design — so the skill's bar ("a cold reader would question it or be tempted to reverse it") isn't met, regardless of how long the debate ran.
+
+What *is* missing is in the row, not the doc: it names only the HTTPS directory and the managed service, so a cold reader could still ask "why an embedded index at all — why not an in-memory map or a direct scan of the snapshot?" or "why does each kiosk rebuild rather than the central team shipping a prebuilt index?" Those are row-level alternatives, closable in one or two lines.
+
+Want me to extend that Decisions row to name the local alternatives (in-memory map, direct snapshot scan, centrally prebuilt index) and why they lost? I'd need your reason for preferring the embedded index over an in-memory map — I can write the alternatives and the trade-offs, but the motive should be yours, not invented.

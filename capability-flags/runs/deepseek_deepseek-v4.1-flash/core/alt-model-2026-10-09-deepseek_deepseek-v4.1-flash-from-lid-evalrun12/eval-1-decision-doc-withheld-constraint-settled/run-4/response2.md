@@ -1,0 +1,3 @@
+Overkill — keep the row. The no-runtime-network tenet is an inherited gate that eliminates both alternatives (the HTTPS directory and the managed service both require a kiosk-side network round trip per lookup), so a cold reader can re-derive the choice from the HLD plus the one-line rationale. That's the "settled by an inherited constraint" case the methodology records as a Decisions row, not a full doc — the long back-and-forth doesn't change that, since a debate having happened is a symptom, not the test. I'll leave `docs/intent/registry/decisions/lookup-backend.md` unwritten.
+
+Still open from the Phase 2 stop: triage of the six gaps (especially #2, the duplicate-definition spec fork) and approval to cascade into Phase 3 (EARS).

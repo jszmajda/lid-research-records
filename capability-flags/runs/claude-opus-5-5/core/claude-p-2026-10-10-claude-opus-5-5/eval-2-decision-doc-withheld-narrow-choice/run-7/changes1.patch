@@ -1,0 +1,57 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..639aed3 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with 2Q eviction, which keeps reused comparison sheets cached through long sequential screenings.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..31a1641 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, but the costly failure is the same everywhere: a long screening pushing the comparison working set out of the cache, so that every return to a comparison sheet waits on a fresh render. The cache is designed to prevent that.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,29 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Eviction Policy
++
++Eviction follows 2Q. The worker sorts what it knows about into three structures:
++
++- **Probationary queue** — sheets rendered for a key the worker has not recently evicted. FIFO, ordered by admission time. Target share: 25% of the cache budget (3 GiB, about 1,500 typical sheets).
++- **Protected queue** — sheets that have shown reuse. Ordered by most recent request, least recently requested evicted first. It uses whatever part of the 12 GiB the probationary queue does not.
++- **Recently-evicted list** — preview keys only, no JPEG data, for sheets evicted from the probationary queue. FIFO, holding at most 3,000 keys (the key count of roughly half the budget at the typical 2 MiB sheet size). It does not count against the 12 GiB.
++
++**Admission.** A completed sheet whose key is on the recently-evicted list enters the protected queue and its key leaves the list. Any other completed sheet enters the tail of the probationary queue.
++
++**Requests for cached sheets.** A request answered with 200 from the protected queue moves that sheet to the most-recently-requested end. A request answered with 200 from the probationary queue changes nothing: the sheet keeps its admission position and is not promoted. Requests answered with 202 change no queue state, however many share the ticket. Reuse is recognised only when a sheet is requested again after leaving the probationary queue. Under the pending-response protocol every newly rendered sheet is first delivered by a retry that finds it cached, so promoting on a request for a cached probationary sheet would promote every one-off screening sheet on its first delivery.
++
++**Choosing what to evict.** While admitting a sheet would exceed the 12 GiB bound: if the probationary queue holds more than its target share, evict its oldest sheet and append that key to the recently-evicted list, dropping the list's oldest key if it is full; otherwise evict the least recently requested protected sheet, whose key is not remembered. If the queue selected by that rule is empty, evict from the other.
++
++**Effect on the two workloads.** A sequential screening flows through the probationary queue and out again without displacing protected sheets, because eviction comes from the probationary queue for as long as it is over its share. A comparison sheet stays cached while fewer than about 1,500 new sheets have been admitted since it was rendered; if a screening does push it out and the editor returns to it within the next 3,000 probationary evictions, that one request re-renders it (about 450 ms, through the ordinary pending response) and it is then protected for the rest of the screening.
++
++**Bookkeeping.** Queue membership, ordering, and the recently-evicted list are in-memory state of the worker. Evicting for and admitting one completed sheet is a single step under one lock, together with the queue updates that describe it, so concurrently completing render jobs cannot each evict against the same total. The probationary share and the recently-evicted list capacity are worker configuration; the values above are the starting defaults and are tuned from the worker's own observations. Neither value, nor any queue state, is visible through the HTTP interface.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q | LRU; frequency-based eviction with aging | Protecting comparison sheets during large screenings outweighs bookkeeping cost. LRU has the least bookkeeping and follows a project switch fastest, but one long sequential screening evicts the comparison working set. Aged frequency counts retain popular clips but add counter maintenance and keep an earlier project's favourites after editors move on. 2Q costs two queues, a key list, and a size split that needs tuning. All three leave the preview interface, render queue, and 12 GiB budget unchanged. |
++| When a sheet becomes protected | On re-render while its key is on the recently-evicted list | Promote on any request for a cached probationary sheet | The retry that delivers a newly rendered sheet is itself a request for a cached probationary sheet, as are reloads and scrubbing back within a screening; promoting on those would fill the protected queue with one-off sheets. The cost is one extra render for a comparison sheet that ages out of the probationary queue before its reuse is recognised. |
++| Starting queue sizes | Probationary share 25% of budget; recently-evicted list 3,000 keys | Even split; smaller key list | The proportions recommended with the original 2Q algorithm (a quarter of capacity probationary, half of capacity remembered as keys). A 1,500-sheet probationary queue is larger than a comparison working set, and the list costs only keys. Both are configuration because the screening-to-comparison mix varies by production. |
++| Unit of the size split | Bytes for the queues, key count for the list | Entry counts throughout | The budget being enforced is 12 GiB of JPEG data and sheet sizes vary; the list holds no JPEG data, so only its length matters. |

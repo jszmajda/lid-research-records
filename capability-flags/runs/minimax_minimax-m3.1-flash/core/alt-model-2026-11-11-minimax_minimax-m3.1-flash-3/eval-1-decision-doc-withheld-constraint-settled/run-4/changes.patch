@@ -1,0 +1,85 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..e557856 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, a local embedded index built on the kiosk from each accepted snapshot, and serial-number lookup against that index. The index never leaves the kiosk, and no lookup crosses a network.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..3823396 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -9,16 +9,64 @@ prefix: REG
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
++Kiosks sit inside an isolated production area with no network route. Every lookup must therefore be answered from files on the kiosk itself.
++
+ ## Architecture
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++The lookup backend is a local embedded SQLite index, built on the kiosk from each accepted snapshot. Snapshot validation, index construction, index activation, and lookup all belong to this node. No registry operation opens a network connection.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Build the new index only after those checks pass. Activate the new index only after the build completes. An import failure at any step leaves the previous snapshot active and reports a useful error.
++
++## Local Index
++
++Each activated snapshot has one SQLite database file on the kiosk. A pointer file names the index that is currently active and the snapshot date it carries.
++
++The index holds two tables:
++
++| Table | Purpose |
++|---|---|
++| `records` | One row per registry record: the normalized serial as primary key, the serial exactly as it appears in the snapshot, the equipment description, the calibration date, and the due date. |
++| `snapshot_meta` | The snapshot date, the schema version, and the record count of the snapshot the index was built from. |
++
++The normalized serial is the primary key, so a lookup is a single index seek. An index of roughly 90,000 rows answers a lookup well inside the kiosk's 250 ms budget.
++
++Building an index reads the snapshot line by line and inserts rows in batches inside one transaction. A malformed line, a record that violates the schema, or a failure to write the file aborts the build and leaves no index file to publish.
++
++## Index Activation
++
++A new index is built at a temporary path and published by renaming it to its final path and then writing the pointer file to name it. The rename and the pointer write are each atomic, and the pointer is only updated after the index file is in place, so the active index always names a fully built file.
++
++The previously active index file is kept until the replacement is published, then deleted. While a new index is being built, lookups continue to be answered from the currently active index.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists.
++
++If the active index file is missing or cannot be read, the lookup reports an error instead of returning NotFound. NotFound means the active snapshot was searched and held no such serial number.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | A local embedded SQLite index built on the kiosk from each accepted snapshot | An on-site HTTPS directory; a managed search service | The HLD tenet "All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted" eliminates both remote backends: neither can answer a lookup under it. Among the local choices the SQLite index needs no service to run and makes each kiosk's lookup result a function of the snapshot it holds. The cost is that every kiosk validates and rebuilds its own index when a snapshot arrives; that work stays inside this node and does not change the certificate interface or the lookup result type. |
++| Index construction | Each kiosk rebuilds the index from the snapshot's records when a snapshot arrives | The central inventory team prebuilds the index and ships it on the USB media alongside the snapshot | The snapshot is the signed artifact and the index is derived from it. A shipped index would need its own signature and its own agreement with the snapshot format, and it could disagree with the snapshot it travels with, so the kiosk would have to rebuild or re-verify it anyway. Rebuilding on the kiosk costs each kiosk the time and storage of one build per snapshot, and keeps the signed artifact the only thing the kiosk has to trust. |
++| Index lifecycle | One SQLite file per snapshot, published by atomic rename, with the previous file kept until the replacement is published | Rewriting a single index file in place; keeping every historical index | Publishing by rename means a partially built index is never reachable through the pointer, and keeping the previous file until then means a failed build leaves a usable snapshot. Keeping all historical indexes was rejected because technicians only ever need the active snapshot. |
++| Lookup key | The normalized serial is the primary key of `records` | Storing the raw serial and normalizing at query time | Normalizing once at build time keeps the lookup path a single seek on a normalized key and keeps normalization rules in one place, rather than in both the build and the query. |
++| Snapshot date | Stored in the index's `snapshot_meta` table and read alongside the record | Keeping the snapshot date only in the pointer file | The snapshot date travels with the index it describes, so the pointer and the index cannot disagree about which snapshot a result came from. |
++| Failed index read | A lookup reports an error | Returning NotFound | NotFound carries meaning for the certificate node — the snapshot was searched and had no such serial — so a missing or unreadable index must not be reported as an absent record. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ The lookup backend is a local embedded SQLite index; the alternatives and the reason are recorded in the table above.
++2. ✅ A lookup against a missing or unreadable active index reports an error rather than NotFound.
++
++### Deferred
++
++1. The runtime and language used to implement the kiosk, and with it the SQLite binding, are not yet chosen.
++2. The on-disk location of the index files and the pointer file within the kiosk's storage layout is left to implementation.

@@ -1,0 +1,3 @@
+A row, not a doc — would be overkill here.
+
+The test is about the *landed* state: would a cold reader find the choice genuinely re-litigable without seeing the competing options laid out? Once the rationale states the HLD's offline-lookup tenet, the other two options aren't live alternatives a reader would be tempted to reverse to — they're ruled out by a constraint the project already committed to elsewhere. That's exactly the case the skill calls out for skipping a doc: a choice "that an inherited constraint settles." The row I added captures the options and that rationale, which is enough for a future reader to reconstruct the call.

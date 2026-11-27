@@ -1,0 +1,3 @@
+I’d record it in the preview LLD’s **Decisions & Alternatives** table rather than create a standalone decision doc. The choice is contained within the preview cache, and that row can capture why 2Q was selected over LRU and aged frequency-based eviction. The length of the debate alone doesn’t make it a separate design artifact.
+
+I’m still paused at the HLD review stop; once you approve that update, I can proceed with the preview LLD.

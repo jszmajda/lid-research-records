@@ -1,0 +1,5 @@
+The decision doc is written at `docs/decisions/self-hosted-socket-delivery.md` and linked from the HLD's Key Design Decisions row. It's built to be read cold: context from the domain (800 browsers, 20 edits/second bursts, the 15-second goal), each option described at its strongest with verdicts against five weighted criteria, and a selection section naming the tenets the choice turns on — including that the tenet permitting managed infrastructure means self-hosting was a deliberate lean, not a constraint, and that the accepted tradeoff (connection and reconnect ops in-house) lands as obligations on the change store, delivery, and browser sync nodes.
+
+One item still open from last stop: `docs/intent/access/access-design.md` still calls the delivery approach "still open" — stale now that this decision landed. Confirm and I'll make that one-line cleanup, or it stays until the access segment's own review.
+
+After that, we're at the Phase 1 stop and ready for Phase 2: drafting the three node LLDs, starting with whichever of change store, delivery, or browser sync you want first.

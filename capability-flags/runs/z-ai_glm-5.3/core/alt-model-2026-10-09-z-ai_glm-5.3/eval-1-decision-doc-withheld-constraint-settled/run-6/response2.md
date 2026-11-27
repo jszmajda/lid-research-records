@@ -1,0 +1,5 @@
+Honest answer: overkill. Re-running the earns-its-place test from the landed state — the question is whether a cold reader would re-litigate the choice, not whether the debate was long — the two alternatives don't survive contact with the HLD tenets: "no runtime network access is permitted" and "kiosks have no network route" eliminate the HTTPS directory and the managed search service outright. An inherited constraint settles it, and the heuristic's explicit guidance is that a choice an inherited constraint settles gets a row, not a doc, *however long the debate ran*. Your back-and-forth difficulty is deliberation history — real, but not the test; once landed, "offline kiosks use a local index" reads as the only compliant shape, and a doc arguing for it would be residue.
+
+The Decisions row already in the LLD is the right weight — it names the tenet as the gate, which is the one line a future reader needs. I'd leave it there and drop the offer.
+
+Still pending from the Phase 2 stop, whenever you're ready: your triage of the 10 probe gaps (fix in LLD vs. defer), then approval of the revised LLD so I can move to Phase 3 EARS updates.

@@ -1,0 +1,30 @@
+**Posture:** *Design-tree bootstrapped; tenets and queue persistence are out of step, and test/code phases are not yet started.*
+
+**Scorecard**
+- ✓ Configuration & tree alignment — `CLAUDE.md`, HLD, leaf LLDs, and `REG`/`QUEUE` spec prefixes line up cleanly
+- ⚠ Tenet cascade — `job-queue` drops undispatched jobs on restart, working directly against the HLD's core tenet and overnight-print goal
+- ⚠ Decision capture — in-memory queue storage is stated in design prose without a Decisions row recording what was traded away
+- ⚠ Tenet quality — HLD tenets read as promises and rules rather than ordered tie-breakers with defensible opposites
+- ✗ Arrow completeness — all 8 specs are marked `[x]`, but no test or code files exist in the repository yet
+- ⚠ Cascade & spec coverage — cross-node state (`suspect` printers) and several LLD behaviors lack spec coverage or contract alignment
+
+**Headline:** The design tree (`HLD → 2 LLDs → 8 EARS specs`) is concise, readable, and well-namespaced; the highest-leverage next step is reconciling the in-memory queue design with the HLD's "submitted job is a promise" tenet (and capturing that decision) before implementing tests and code.
+
+**Findings (8 total · 3 high · 4 medium · 1 low)**
+- **F1 (high):** `job-queue-design.md` holds accepted jobs only in process memory — losing undispatched jobs during the unattended OS updates and power blips its own Context describes — which directly defeats the HLD tenet *"A submitted job is a promise: members should be able to upload and walk away"* and the goal *"Evening upload, overnight print, morning pickup — with no member present"* without a recorded exception · *tenets capture forward-looking preference* & *coherence is adjacency* (leaf designs should lean the way HLD tenets and goals say to lean, or explicitly record the trade-off)
+- **F2 (high):** The choice to keep the job queue purely in memory and require members to resubmit after a restart is stated in `job-queue-design.md` body prose (`§Architecture`) with no entry in `## Decisions & Alternatives`, even though `printer-registry` already uses SQLite on the same mini-PC · *docs carry current intent, written to be read cold* (a decision that a cold reader would question or want to reverse needs its rejected alternatives and accepted costs recorded in the Decisions table)
+- **F3 (high):** All 8 specs in `printer-registry-specs.md` and `job-queue-specs.md` carry `[x]` status markers, but the repository has no test or implementation files yet · *canonical arrow shape* & *tests before code* (each phase of `HLD → LLDs → EARS → Tests → Code` exists for components in scope, with `[x]` reflecting verified implementation)
+- **F4 (medium):** `job-queue-design.md` and `QUEUE-003` mark a printer `suspect` on dispatch failure, but `printer-registry-design.md` only defines `idle`, `busy`, and `unreachable` (after three missed heartbeats) — leaving it unclear to a cold reader who owns `suspect`, whether a suspect printer still receives dispatches, and how it recovers · *intent attaches at the lowest node that dominates it; cascade within a segment, pause across* & *docs carry current intent, written to be read cold* (cross-node obligations and shared state models must be reconciled across sibling LLDs so the docs stand on their own)
+- **F5 (medium):** Several explicit LLD behaviors have no corresponding EARS specs — specifically: rejecting a job when its target class has no registered printers (`job-queue-design.md` §Dispatch behavior), ordering staff priority ahead of member FIFO (`job-queue-design.md` §Prioritization), and registering a printer (`printer-registry-design.md` §Context) · *effective intent-tree alignment* (LLD behaviors with no specs are unnamed intent with nothing for tests to cite)
+- **F6 (medium):** `QUEUE-001` scopes the 64 MB upload limit with *"When a member uploads..."*, leaving ambiguous whether staff uploads are exempt or subject to the same disk-safety limit described in the LLD · *scope disambiguation* (a spec's `WHEN` clause should match the true scope of the requirement so a second role or variant doesn't become an implementation trap)
+- **F7 (medium):** The HLD's `## Tenets` list is unordered and mixes value promises (*"A submitted job is a promise..."*), spec-shaped rules (*"...no silent reordering"*, which duplicates `QUEUE-005`), and hardware constraints (*"The mini-PC is modest hardware..."*) rather than prioritized tie-breakers with defensible opposites · *tenets capture forward-looking preference* (tenets work best as ordered tie-breakers for unanticipated choices where the opposite is a reasonable path another project could take)
+- **F8 (low):** `docs/high-level-design.md` includes problem, approach, architecture, tenets, goals, and non-goals, but omits target users, key design decisions (such as the shared persistence model across the service), and success metrics · *HLD is architecture and rationale* (capturing architecture-level decisions and metrics in the HLD keeps cross-component rationale in one place)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/printer-registry/printer-registry-design.md`, `docs/intent/printer-registry/printer-registry-specs.md`, `docs/intent/job-queue/job-queue-design.md`, `docs/intent/job-queue/job-queue-specs.md`
+- Enumerated: 1 HLD, 2 leaf LLDs (`printer-registry`, `job-queue`), 2 spec files (8 EARS specs total: `REG-001`..`003`, `QUEUE-001`..`005`), 0 test files, 0 source code files, no `docs/arrows/` overlay
+- Linkage metric: 0 `@spec` references in tests or code (implementation phases not yet present)
+
+Want me to walk through the findings in detail, focus on a theme or priority, or work through specific items together? You can also pick a specific finding to dig into.
+
+If you have broader questions about using LID for your project — multi-repo setups, where PRDs fit, mode transitions, what to do when a segment grows too large — I can help with those too.

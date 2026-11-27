@@ -1,0 +1,10 @@
+I've written the full decision doc at `docs/intent/record-store/decisions/concurrency-policy.md` and linked it from the LLD's Decisions & Alternatives row. It covers:
+
+- **Decision Elements**: a preservation gate (both options pass) plus four weighted criteria — silent-combination risk and coordinator review workload (major), implementation/maintenance burden (moderate), submission size (minor) — each tied to the HLD tenet it draws its weight from.
+- **Both options in full**, each with a concrete demonstration and an analysis bullet per element (verdict + basis).
+- **Selection**: whole-visit revisions wins on the silent-combination risk, which ties to "keep the path... inspectable" and to the non-goal ruling out scientific inference — a merge-rule set smart enough to catch species-ID/cover-estimate style relationships would itself be the inference the project won't build. Review workload cuts the other way and the team accepted that cost explicitly.
+- **What it forecloses**: no visit ever reaches export through an automatic combination.
+- **What tablet-sync and review-export inherit**: tablet-sync retains base revision IDs and must show a worker when their submission is pending as a competing revision rather than silently accepted; review-export needs a revision-comparison workflow and must exclude unresolved visits from the weekly export.
+- **When to revisit**: if the review queue outgrows two coordinators, or if a narrow, science-partner-vetted rule set (not server-inferred) could cover genuinely independent fields.
+
+Still open from last turn, since you didn't address them: the four LLD-internal gaps (stale/unknown base revision IDs, whether a resolution can be revised, whether a coordinator's manually-composed resolution needs its own idempotency key, three-plus-way races). Want me to settle those now, or defer them as open questions in the LLD and consider record-store done for this session?

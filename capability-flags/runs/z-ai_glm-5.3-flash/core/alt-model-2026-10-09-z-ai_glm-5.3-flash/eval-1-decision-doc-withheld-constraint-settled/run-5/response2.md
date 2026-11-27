@@ -1,0 +1,7 @@
+Overkill — the row is the right record here.
+
+The decision-doc test is whether the choice **stays live once it lands**: would a cold reader of the design be tempted to re-litigate it without the competing options and criteria written out at full length? Here, no. Both alternatives were disqualified by an inherited constraint — the HLD tenet *no runtime network access during kiosk operation* rules out the HTTPS directory and the managed search service regardless of their other merits. When one option is settled by an existing constraint rather than traded against multiple live criteria, the skill says to record the row (or nothing) and skip the doc — the debate ran long, but the landed result reads as native, and that's the test that counts.
+
+The Decisions row in `docs/intent/registry/registry-design.md` carries the rationale and the two named rejections, which is exactly what a future reader needs to reconstruct why the other candidates weren't viable. A full decision doc would mostly restate the tenet that already decided it.
+
+If the constraint ever weakens — say, the kiosks get a lab network route and the HLD tenet is revised — that's the moment a decision doc would earn its place.

@@ -1,0 +1,5 @@
+Overkill — the row covers it. A decision doc is for a choice that stays live for a cold reader, and this one doesn't: the HLD's offline tenets (kiosk-local lookup, no runtime network, USB-only updates) eliminate the HTTPS and managed-service options outright, so a cold reader of the landed design sees SQLite as the natural fit, not a contested call they'd re-litigate. The tenets are inherited constraints, and the choice affects only the registry's own internals, so per the skill it records as a Decisions & Alternatives row — which it now has, with the alternatives and rationale for anyone who wonders "why this?"
+
+If the tenets ever change (say, kiosks get a lab network and you revisit central hosting), that's a new decision, and the HLD-level change itself would carry the deliberation — not this row.
+
+Still waiting on your triage of the LLD and the seven probe gaps before I proceed to the EARS updates.

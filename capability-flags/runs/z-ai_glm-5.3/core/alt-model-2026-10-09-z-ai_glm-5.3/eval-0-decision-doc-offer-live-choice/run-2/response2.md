@@ -1,0 +1,8 @@
+Decision doc written at `docs/decisions/self-hosted-websocket-delivery.md`, linked from the HLD's Key Design Decisions entry. A cold reader gets the full re-runnable judgment:
+
+- **Context** — the delivery problem, the 15-second/800-browser/20-minute-recovery constraints, and the stale-board failure mode it must avoid.
+- **Decision elements** — two gates all options pass (freshness floor, authoritative revision), then five weighted criteria: disconnect visibility and recovery correctness (major — the first derived from the visible-failures tenet), recurring cost, vendor coupling, and operational burden (all moderate — no overriding criterion was declared).
+- **Options** — each presented at its strongest: polling (stateless, any-process-serves), self-hosted WebSockets (push-on-commit, one replay mechanism serving both live feed and recovery), hosted realtime (provider carries the connection fleet).
+- **Selection** — WebSockets is the only option strong on both major criteria at once; the moderate criteria also break its way for a single narrow update stream, and the connection-operations burden is accepted as bounded at 800 browsers. Forecloses stateless operation; obligates the store, delivery, and browser sync designs downstream.
+
+Phase 1 is now complete with the decision recorded. On your approval of the HLD and decision doc, I'll proceed to the change store, delivery, and browser sync nodes — and let me know whether to also fix the "still-open delivery approach" line in the access design doc while I'm at it.

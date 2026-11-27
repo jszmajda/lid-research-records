@@ -1,0 +1,6 @@
+I've written the decision doc and linked it from the HLD. This is the Phase 1 stop — please review before we move to the three nodes.
+
+- **`docs/decisions/delivery-approach.md`** (new): full decision doc with Context, Decision Elements (gates + major/moderate weighted criteria), the three options each analyzed against those elements, and a Selection explaining why self-hosted WebSockets won — latency ties with the hosted service, polling trails but not decisively, and avoiding vendor coupling was the deciding criterion over the hosted service's lighter ops burden.
+- **`docs/high-level-design.md`**: added a Key Design Decisions row pointing to the doc; Approach and Architecture sections now describe the committed WebSockets design (store needs replayable revisions + reliable publication, delivery owns socket session lifecycle, browsers carry reconnect/catch-up logic) instead of leaving the choice open.
+
+Any numbered feedback before we move on to drafting the change-store, delivery, and browser-sync LLDs?

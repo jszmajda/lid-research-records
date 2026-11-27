@@ -1,0 +1,13 @@
+`docs/intent/job-queue/job-queue-design.md:14` chooses an in-memory queue and states that accepted-but-undispatched jobs disappear after a service restart. That is a deliberate simplicity tradeoff, but it conflicts with the HLD's most consequential promise: members can submit in the evening, walk away, and collect the part the next day. A mini-PC that receives OS updates and has occasional power blips is specifically the environment in which this behavior will surface.
+
+This is both a **tenet-cascade** and **decision-capture** concern. *Tenet cascade* means a leaf design should lean toward the project-level priorities; here, queue volatility defeats the unattended-operation goal under a normal operating condition. *Decision capture* means a cold reader should be able to see both the rejected alternative and the cost the system accepts. The current design records the cost but not why losing submitted jobs is an acceptable interpretation of the promise.
+
+I would choose one of these directions:
+
+1. **Make accepted jobs durable.** Persist the queue metadata and submission state alongside the existing content-addressed G-code files, then recover undispatched jobs at startup. This best fulfills the HLD promise and makes restarts a normal operational event rather than a member-facing failure. It increases implementation surface, but the project already accepts a SQLite file for the registry, so a small durable queue store is consistent with the stated architecture.
+
+2. **Keep the in-memory queue, explicitly narrow the promise.** Amend the HLD tenet and overnight-print goal so they do not imply survival across restarts, and add a Decisions & Alternatives row explaining why the lower operational complexity outweighs lost submissions. This is viable only if the makerspace and its members genuinely accept resubmission after a power event or maintenance restart.
+
+3. **Keep the current design as an intentional exception.** Add a Decisions & Alternatives row naming the submitted-job promise and unattended-print goal being traded away, why restart loss is accepted, and what mitigates it, such as visible restart notices or an operator recovery procedure. This resolves the documentation gap but does not resolve the user-facing reliability conflict.
+
+For this project, I would lean toward option 1: a queued print is a long-lived, externally visible commitment, and restarts are already an expected condition in the design context. The smallest next action is to decide which direction the promise takes; then run `/linked-intent-dev` with that change so the HLD, queue LLD, EARS requirements, tests, and implementation stay coherent.

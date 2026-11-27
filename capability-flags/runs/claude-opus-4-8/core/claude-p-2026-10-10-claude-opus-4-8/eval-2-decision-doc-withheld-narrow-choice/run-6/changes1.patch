@@ -1,0 +1,65 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..411eb0d 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with a 2Q replacement policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..2bb8a48 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -21,6 +21,45 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, the worker evicts existing sheets until the new sheet fits within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement
++
++The worker replaces sheets with a 2Q policy. 2Q separates sheets seen once from sheets requested again, so that a long sequential screening cannot flush the comparison working set out of the cache. It carries more bookkeeping than a single recency list; that cost is accepted to protect comparison sheets during large screenings.
++
++The worker keeps two resident queues plus one identifier-only ghost list:
++
++- **Recent queue** — a FIFO queue of sheets admitted after their first miss. One-use screening sheets mostly live and die here.
++- **Reused queue** — an LRU queue of sheets that have been requested more than once. Comparison sessions keep their working set here.
++- **Ghost list** — clip-revision and renderer-version keys recently evicted from the recent queue, holding no JPEG bytes. It lets a sheet requested again shortly after eviction be recognized as reused.
++
++Admission and promotion:
++
++- A first miss renders the sheet and admits it to the tail of the recent queue.
++- A request whose key is on the ghost list renders the sheet and admits it to the reused queue — a reuse that outlived its first eviction.
++- A request whose key is resident is served in place; whether a hit inside the recent queue promotes it to the reused queue is an open question (see below).
++
++Eviction, applied when admitting a sheet would exceed 12 GiB:
++
++- While the recent queue exceeds its byte target `Kin`, evict its oldest (FIFO) sheet and record that sheet's key on the ghost list.
++- Otherwise evict the least-recently-used sheet from the reused queue.
++- The 12 GiB bound is hard and overrides `Kin`: if trimming the recent queue to `Kin` does not make room, eviction continues from the reused queue until the new sheet fits.
++- The ghost list stores keys only, is bounded to `Kout` keys (dropping its oldest), and is not counted against the 12 GiB JPEG budget.
++
++`Kin` and `Kout` are tuning parameters (see Decisions & Alternatives and Open Questions). All replacement bookkeeping stays private to the worker; no endpoint, render-queue concurrency, or disk-budget behavior changes.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q — recent FIFO queue + reused LRU queue + evicted-key ghost list | LRU; frequency-based eviction with aging | 2Q admits first-use sheets to a separate recent queue, so a one-pass screening evicts its own one-off sheets rather than the comparison working set. LRU carries the least bookkeeping but a long sequential screening flushes reused sheets. Aged frequency counts retain repeatedly popular sheets but add per-access counter maintenance and lag a project switch, keeping yesterday's favorites too long. The extra bookkeeping — two queues, a ghost list, and the `Kin`/`Kout` size split — is accepted to protect comparison sheets during large screenings. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Eviction policy is 2Q, chosen over LRU and aged frequency to keep long screenings from evicting the comparison working set.
++
++### Deferred
++1. Default values for `Kin` (recent-queue byte target) and `Kout` (ghost-list length), and their tuning against pilot workloads. Starting point: `Kin` ≈ 25% of the 12 GiB budget; `Kout` ≈ the number of keys the recent-queue target would hold.
++2. Promotion-on-hit: whether a resident recent-queue sheet that is requested again promotes immediately to the reused queue, or only via the ghost list after eviction (classic 2Q).
++3. Queue and ghost-list state across a worker restart: replacement metadata is in-memory, so a restart empties both queues and the ghost list. Acceptable for the pilot?

@@ -1,0 +1,11 @@
+My honest read: no, and the arguing is the reason I'm confident rather than the reason to reconsider.
+
+The test is applied from how the choice *lands*, not from how hard it was to settle. A doc earns its place when a cold reader would re-litigate the choice without the competing options in front of them — typically because other design nodes got sized around the result, so reversing it is expensive and someone will be tempted to try. Here nothing else is sized around it. All three options left the 202 job-ticket protocol, the four-job FIFO queue, the 12 GiB budget and the review API's blindness to eviction completely untouched; the HLD already forbids any other node from reading cache files or eviction metadata. The decision is contained in one leaf, and reversing it later means editing one section of the previews LLD and re-tuning one parameter.
+
+What a cold reader *will* ask is "why two queues and a size split instead of plain LRU?" — and one row answers it: chosen 2Q; considered LRU and aged frequency counts; reason, comparison sheets survive a long sequential screening, accepting the extra bookkeeping and a queue-size parameter to tune. That is the whole substance of three meetings, and it reads as a complete answer precisely because the design around it doesn't bend either way.
+
+The risk of a doc here isn't wasted effort, it's that it memorializes the *debate* rather than the design — a future reader finds a standalone artifact arguing a question the system has no remaining stake in, and it invites reopening a settled thing. Decision docs are meant to be rare; a `previews/decisions/` directory that exists for one contained cache-policy choice is the beginning of the smell.
+
+That said, this is your call and you hold context I don't — if this thread is going to keep coming back in meetings and you want something to point at, say so and I'll write it properly at `docs/intent/previews/decisions/`, with the criteria, all three options and the fit verdict, linked from the LLD's Decisions row. It's not wrong, just more structure than this choice needs.
+
+So: shall I proceed with the row as described, or write the doc? Either way, I still need your approval on the Phase 1 HLD sync before I start Phase 2 on the LLD.

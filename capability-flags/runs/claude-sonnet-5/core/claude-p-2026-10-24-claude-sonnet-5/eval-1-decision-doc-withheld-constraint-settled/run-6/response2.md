@@ -1,0 +1,7 @@
+A table row is the right call here, not overkill avoidance — it's a deliberate application of the skill's test.
+
+The test is: **would a cold reader of the landed result find the choice non-obvious or be tempted to reverse it?** That's judged from the result, not the deliberation — so "I went back and forth more than expected" doesn't by itself earn a doc; plenty of contested-while-deciding choices read as obviously-right once they land.
+
+What actually rules it out here is narrower: a decision doc is reserved for a choice that **stays live** — credible options traded against more than one criterion, *and* other design nodes about to be sized around the result. This one fails the second half on purpose: the HLD's no-runtime-network tenet already does most of the work (two of your three options needed a network route a kiosk doesn't have), the backend is explicitly private to the registry node, and the certificates interface is unchanged under all three options. Nothing else in the design tree gets sized around which backend you picked.
+
+The table row carries the same information a doc would (chosen option, alternatives, rationale) without implying there's a live tension for future readers to re-litigate. If you want it recorded more heavily anyway — e.g. because you expect to revisit this once kiosk hardware or the network situation changes — say so and I'll write the doc; that's exactly the kind of judgment call that's yours to make, not mine to settle by rule alone.

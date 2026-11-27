@@ -1,0 +1,73 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..15bc420 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Replacement uses 2Q: new sheets pass through a small probation queue, and only reused sheets reach the main LRU queue, so sequential screenings do not evict comparison sheets.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..90d693f 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,11 +7,11 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so the replacement policy must trade scan resistance against bookkeeping cost and how quickly the cache follows a project switch.
+ 
+ ## Architecture
+ 
+-Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. This contract is fixed regardless of cache eviction policy.
++Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. This contract is fixed regardless of cache replacement policy.
+ 
+ Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect policy counters, or depend on entries remaining warm.
+ 
+@@ -21,6 +21,38 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict existing sheets as required by the replacement policy so the cache remains within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Replacement Policy: 2Q
++
++Replacement keeps two queues over the shared 12 GiB budget:
++
++- **A1 (probation queue)** — FIFO. Every newly admitted sheet enters A1. A1 is bounded to a configurable fraction of the cache budget (default 25%, about 3 GiB). When admitting a new sheet would push A1 past its bound, evict A1's oldest entry first.
++- **Am (main queue)** — LRU. A hit on an entry while it sits in A1 promotes it to Am: two uses is the signature of a comparison clip rather than a screening one-off. A hit on an Am entry refreshes its LRU recency. When a promotion would push Am past its bound, evict Am's least-recently-used entry.
++
++Eviction order when a new admission needs space overall: free A1's FIFO victim first, then Am's LRU victim, until the admission fits within the budget. Entry sizes are roughly uniform (about 2 MiB per sheet), so victim counts approximate byte accounting; the byte bound, not an entry count, is authoritative.
++
++An entry evicted from A1 keeps no history: a later request for that sheet is a fresh first use and re-enters A1. Keys carrying a superseded renderer version are not purged explicitly; they age out through normal replacement.
++
++Pending jobs occupy no queue position. A sheet's queue life begins when it is admitted after a successful render. A request that arrives while the render is still pending is served by the deduplication path (202 with the shared job ticket) and does not count toward promotion.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q (A1 probation queue + Am LRU queue) | LRU; frequency-based eviction with aging | Long sequential screenings insert many one-use sheets that plain LRU would let evict the comparison working set. 2Q holds each new sheet on probation and admits only reused sheets to the main queue, protecting comparison sheets during big screenings. LRU has the lowest bookkeeping and adapts fastest to a project switch but is scan-vulnerable; frequency counting with aging retains repeatedly popular clips but adds counter maintenance and can keep yesterday's favorites too long. The extra 2Q bookkeeping stays confined to this worker's private replacement state. |
++| 2Q variant | Two queues, promotion on a hit while in A1 | Classic Johnson–Shasha 2Q with an A1out ghost directory | A ghost directory is a third list of evicted keys without bytes; it re-promotes a sheet whose second hit arrives after A1 eviction. The selected shape is two queues and a size split; the ghost variant adds metadata to narrow a re-render window, and a re-render is ordinary behavior here (the 202 path already exists for it). |
++| A1 size split | A1 bounded to 25% of budget, a tunable parameter | 50% split; adaptive sizing | Screening bursts are large and one-use, so a small A1 keeps them from displacing the comparison working set while still giving every new sheet a probation window. The right value depends on the production mix; the default is a starting point to tune from pilot measurements. |
++| Where policy state lives | Entirely private to the preview worker | Exposing policy hints, pinning, or counters through the preview API | The review API must stay policy-blind (HLD tenet: replacement bookkeeping is private to the worker), and every candidate policy left the HTTP interface unchanged, so privacy carries no cost. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Tune the A1 fraction and confirm the 25% default from observed pilot workloads.
++2. Whether a hit arriving while a sheet's render is still pending should count toward promotion (current design: it does not; the sheet enters A1 on admission and needs one post-admission hit). Revisit if comparison sessions routinely request a clip twice before its first render completes.
++
++## References
++
++- docs/high-level-design.md — tenets, cache budget, interface invariance
++- docs/intent/review-api/review-api-design.md — the policy-blind consumer of this interface
+\ No newline at end of file

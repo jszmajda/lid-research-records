@@ -1,0 +1,69 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..2b61743 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with its replacement policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+@@ -27,7 +27,7 @@ The review API accesses previews only through the fixed HTTP interface. No other
+ - Support 24 active editors on one eight-core preview worker during the pilot.
+ - Limit cached JPEG data to 12 GiB.
+ - Deduplicate concurrent rendering requests for the same preview key.
+-- Return a ready preview or a pending response through the same interface for every eviction policy.
++- Return a ready preview or a pending response through the same interface, whichever previews happen to be cached.
+ 
+ ## Non-Goals
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..0d82172 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. A screening can touch more sheets in an afternoon than the cache holds, so the cache distinguishes sheets that have only ever been fetched once from sheets an editor has come back to.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,32 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### Replacement
++
++Replacement is 2Q. Cached sheets live in one of two queues, and a third structure remembers keys without holding bytes:
++
++- **First-use queue** — sheets fetched once and not since re-requested, ordered by admission and evicted from the oldest end (FIFO). Budgeted at 3 GiB of the 12 GiB.
++- **Reuse queue** — sheets re-requested at least once while cached or while remembered, ordered by most recent access (LRU). Holds the remaining 9 GiB.
++- **Recent-eviction key list** — the keys of sheets evicted from the first-use queue, with no JPEG data, capped at 3,000 keys and dropped from the oldest end. A key here costs no part of the 12 GiB budget.
++
++A completed sheet whose key appears in the recent-eviction key list is admitted to the reuse queue, and that key is removed from the list; any other completed sheet is admitted to the first-use queue. A hit in the first-use queue serves the JPEG and changes no ordering, so a screening that touches each sheet once cannot promote its sheets past the comparison sheets in the reuse queue. A hit in the reuse queue serves the JPEG and makes that entry the most recently used.
++
++Admission evicts until both the 12 GiB total and the 3 GiB first-use budget hold: while the first-use queue is over its budget, its oldest sheet is evicted and its key is recorded in the recent-eviction key list; otherwise the least recently used sheet of the reuse queue is evicted and its key is forgotten.
++
++The split is sized for the pilot's 2 MiB sheets: about 1,500 one-use sheets in flight before a screening starts displacing itself, and about 4,500 reused sheets retained. Both budgets and the key-list cap are worker configuration, expected to be retuned once pilot hit rates are observed.
++
++All three structures are worker-private. Other nodes do not read them, pin entries, or observe which queue a sheet is in.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q — FIFO first-use queue, LRU reuse queue, recent-eviction key list | LRU; frequency-based eviction with aging | A screening scans more sheets than the cache holds, and the sheets editors compare are the ones worth keeping. 2Q is the only candidate where a one-use scan cannot displace reused sheets: LRU lets the scan evict the comparison set, and aged frequency counts both add per-access counter maintenance and keep a previous production's favorites past a project switch. The cost accepted is two queues plus the key list, and three numbers to tune. |
++| First-use / reuse split | 3 GiB first-use, 9 GiB reuse, 3,000 remembered keys | Even split; no key list (admit on second hit while cached only) | A first-use queue large enough to let a screening run without self-displacement still leaves most of the budget for the comparison set. The key list is what lets a sheet re-requested after its one-use eviction land directly in the reuse queue, which is the common shape of returning to a clip the next morning. |
++| Where replacement metadata lives | Entirely inside the preview worker | Expose queue state or pinning through the preview interface | The preview interface returns a ready sheet or a pending ticket, and callers retry; nothing outside the worker needs to know why a sheet was absent. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Retune the 3 GiB / 9 GiB split and the 3,000-key cap against observed pilot hit rates.

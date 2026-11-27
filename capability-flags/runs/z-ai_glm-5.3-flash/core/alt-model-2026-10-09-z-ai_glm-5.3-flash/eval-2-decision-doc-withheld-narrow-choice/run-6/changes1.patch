@@ -1,0 +1,74 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..c9d01bb 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache evicted by the 2Q policy (first-use queue, main LRU queue, keys-only ghost list — all private to the worker).
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..a8caad5 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -19,8 +19,37 @@ Use a FIFO render queue with at most four active rendering jobs. Cache entries a
+ 
+ Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry.
+ 
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q (A1 FIFO + Am LRU + ghost list) | LRU; frequency-based eviction with aging | LRU lets one long sequential screening evict useful comparison sheets. Aged frequency counters retain repeatedly popular clips but add counter maintenance, can keep stale favorites too long, and lag a project switch. 2Q separates first-use entries from reused entries, protecting comparison sheets during big screenings at the cost of two queues, a ghost list, and a tunable size split — all private to this worker. |
++| Budget split | A1 3 GiB / Am 9 GiB, fixed queues (no cross-queue eviction) | Single 12 GiB pool with cross-queue eviction | Fixed queues keep eviction decisions local and simple; the split is a tuning constant, revisitable without structural change. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Eviction policy is 2Q — protects reused comparison sheets from one-off screening scans; extra bookkeeping accepted.
++
++### Deferred
++1. Tune the A1/Am split (3/9 GiB) and the ghost-list bound (2048 keys) against observed workloads after the pilot.
++
+ ## Private Cache
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++Eviction uses the 2Q policy. The cache splits the 12 GiB budget into two queues: a first-use queue A1 capped at 3 GiB, and a main queue Am capped at 9 GiB. A1 is managed FIFO; Am is managed LRU. A keys-only ghost list of at most 2048 keys remembers recently evicted A1 entries and holds no JPEG data.
++
++Admission and movement:
++
++- A rendered sheet whose key is not in the ghost list is admitted to the tail of A1. If this would push A1 past 3 GiB, A1's head entry is evicted and its key enters the ghost list.
++- A sheet in A1 that is accessed again before eviction is promoted to Am (most-recently-used position), leaving A1.
++- A miss whose key is in the ghost list is treated as a reuse: on render completion the sheet is admitted directly to Am and the key leaves the ghost list. This is what shields reused sheets from one-off screening scans.
++- Admitting into Am that would push Am past 9 GiB evicts Am's least-recently-used entry. When the ghost list reaches 2048 keys, its oldest key is discarded before a new one is added.
++
++The 3 GiB / 9 GiB split and the 2048-key ghost bound are starting values to be tuned against observed screening workloads; tuning changes only these constants. Job tickets, the render queue, the HTTP contract, and the 12 GiB total are unchanged: no other node observes queues, ghost keys, or promotion events, and a failed job never reaches any queue.
++
++## References
++
++- Project HLD: docs/high-level-design.md
++- Sibling node: docs/intent/review-api/review-api-design.md
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..7d063c4 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,13 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++
++## Eviction (2Q policy)
++
++- [ ] **PREVIEW-EVICT-001**: When a completed render is admitted and its preview key is not in the ghost list (the keys-only record of recently evicted first-use entries), the system shall insert the new cache entry at the tail of the A1 first-use queue, managed FIFO.
++- [ ] **PREVIEW-EVICT-002**: When a completed render is admitted and its preview key is in the ghost list, the system shall admit the entry at the most-recently-used position of the Am main LRU queue and remove the key from the ghost list.
++- [ ] **PREVIEW-EVICT-003**: When a cache entry in the A1 queue is accessed again before being evicted, the system shall move that entry to the most-recently-used position of the Am queue, removing it from A1.
++- [ ] **PREVIEW-EVICT-004**: When inserting an entry into the A1 queue would push A1's cached JPEG data past its 3 GiB share of the 12 GiB cache budget, the system shall evict the entry at A1's head and add its preview key to the ghost list.
++- [ ] **PREVIEW-EVICT-005**: When inserting an entry into the Am queue would push Am's cached JPEG data past its 9 GiB share of the 12 GiB cache budget, the system shall evict Am's least-recently-used entry.
++- [ ] **PREVIEW-EVICT-006**: When adding a key to the ghost list would exceed its bound of 2048 keys, the system shall discard the oldest key in the ghost list first.
++- [ ] **PREVIEW-EVICT-007**: The ghost list shall hold preview keys only and shall never hold cached JPEG data; total cached JPEG data across A1 and Am shall never exceed 12 GiB.

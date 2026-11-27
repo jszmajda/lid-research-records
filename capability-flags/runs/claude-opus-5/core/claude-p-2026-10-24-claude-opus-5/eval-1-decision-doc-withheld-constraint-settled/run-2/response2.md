@@ -1,0 +1,9 @@
+Overkill, and I'd keep the row.
+
+The test is how the choice reads once landed, not how hard it was to decide. A cold reader opening the HLD meets "all lookup SHALL complete using files on the kiosk; no runtime network access is permitted" before they ever reach the registry node — by the time they see a local SQLite index, it reads as the only thing that could have been there. They won't be tempted to reverse it, because reversing it means reversing a tenet, and the tenet is where that argument would have to happen. The Decisions row already names both alternatives and the one sentence that kills them. A doc would re-litigate the tenet one level too low, in the node that inherits it.
+
+Your going back and forth was real, but it was about trade-offs that turned out not to be in play — the index-rebuild cost against central maintenance, before the offline constraint settled it. A decision doc memorializes deliberation that a reader would otherwise have to redo. This one they don't: they read the tenet and stop.
+
+Two things that would change my answer. If the offline tenet is softer than the HLD states it — say the lab network is expected to reach the kiosks in a year, and the plan is to revisit then — the live decision is the tenet itself, and that belongs in the HLD's Key Design Decisions, still not a registry doc. And if the per-kiosk rebuild cost turns out to be contentious on its own once you see six kiosks each chewing through a 150 MB snapshot, that's a separate choice with its own options (prebuilt signed index, incremental snapshots), and it could earn a doc later without this one needing it.
+
+If either of those is closer to the truth than the HLD currently reads, tell me and I'll write it at the right level. Otherwise the three Phase 3 questions from my last message are what I need: the missing `findBySerial` failure result, what counts as a duplicate serial, and how far normalization goes.

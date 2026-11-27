@@ -1,0 +1,54 @@
+`docs/high-level-design.md` has been updated for Phase 1. Here is the updated HLD in full for review:
+
+```markdown
+# MarketBoard High-Level Design
+
+## Problem
+
+Forty weekend markets currently relay stall closures, late arrivals, and power problems through group chats. About 120 coordinators maintain boards used by up to 800 simultaneous staff browsers. A busy market has 10-25 editors and averages two status changes per minute, with larger bursts around opening time.
+
+## Approach
+
+Keep one authoritative board per event. Editors submit commands over HTTPS; the server commits each accepted edit as the next event revision and pushes committed updates to subscribed browsers over self-hosted WebSockets. Browsers display a revisioned view of the board.
+
+Change storage, delivery, and browser recovery coordinate around replayable event revisions. The change store persists committed edits as ordered revisions and ensures reliable publication to delivery; the delivery component manages self-hosted WebSocket sessions and pushes published revisions to connected browsers; browsers track their current revision and run reconnect and catch-up logic after disconnects.
+
+## Architecture
+
+- Access: `docs/intent/access/access-design.md`, with `docs/intent/access/access-specs.md`. Written below the stable HTTPS command boundary.
+- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Owns authoritative board state, replayable event revisions, and reliable publication of committed edits.
+- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Owns self-hosted WebSocket sessions, subscription credentials, and pushing published revisions to subscribed browsers.
+- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Owns WebSocket subscription lifecycle, visible connection state, and reconnect and catch-up recovery.
+
+## Tenets
+
+- A committed edit has one authoritative event revision regardless of its delivery route.
+- Connectivity failures must be visible, not mistaken for an unchanged board.
+- Commands use server-side authorization; browser state is not evidence of permission.
+- Self-hosted and managed infrastructure are both permitted. Event updates contain stall IDs and operational statuses, not customer records.
+
+## Goals
+
+- Show committed changes in connected browsers within 15 seconds under normal connectivity.
+- Support 800 simultaneous browsers and opening-time bursts of 20 edits per second.
+- Recover the latest board after a browser has been disconnected for up to 20 minutes.
+- Retain seven days of event revisions for operational investigation.
+- Achieve 99.5 percent availability during published event hours.
+
+## Non-Goals
+
+- Offline editing or resolving conflicting offline commands.
+- Vendor payments, customer information, or public attendee access.
+- Multi-region active-active operation for the pilot.
+
+## Key Design Decisions
+
+- **Commands over HTTPS, one authoritative board per event.** Editors submit commands to the server, which assigns each committed edit one event revision. Peer-to-peer or browser-side merging was rejected: the tenets require one authoritative revision regardless of delivery route, and offline editing is a non-goal.
+- **Self-hosted WebSockets for change delivery.** Committed revisions are pushed to subscribed browsers over server-managed WebSocket sessions, backed by replayable revisions and reliable publication in the change store and reconnect and catch-up logic in the browser. Chosen for fast updates without recurring realtime vendor fees or provider coupling, accepting the operational work of connection capacity and reconnect handling. Five-second HTTPS polling was rejected despite simpler stateless operation because it adds multi-second lag and repeated read load; a hosted realtime service was rejected despite lower connection-operations burden because it adds recurring fees and couples board delivery to a third-party provider's subscription model.
+```
+
+Before we move to Phase 2 for `change-store`, `delivery`, and `browser-sync`, please review the HLD above and let me know on three points:
+
+1. **Decision doc vs. Key Design Decisions entry:** Because all three delivery options satisfy the 15-second freshness goal, managed infrastructure is permitted by the tenets, and three child nodes are about to be sized around this choice, a cold reader could plausibly question why MarketBoard runs self-hosted WebSockets instead of 5-second polling or a hosted service. Would you like me to capture this as a standalone decision doc at `docs/decisions/change-delivery.md` (linked from `Key Design Decisions`), or keep just the `Key Design Decisions` entry above?
+2. **Tenet check:** Your selection leans toward owning operational plumbing over coupling core board behavior to vendor-specific services (while Tenet 4 still notes that managed infrastructure is permitted by data sensitivity). Should we add a one-line tenet under `## Tenets` so upcoming choices in `change-store` and `delivery` lean the same way—e.g., *Prefer owning operational work over coupling core board flows to vendor-specific services*—or keep that trade-off scoped to the delivery decision? (Also let me know if you want the 15-second freshness goal tightened or kept as the worst-case bound under normal connectivity.)
+3. **Cross-segment cascade note (`access`):** `docs/intent/access/access-design.md` still refers to `"the still-open change-delivery approach"` in its Context section. Should I update that wording when we enter Phase 2 alongside drafting the three new nodes?

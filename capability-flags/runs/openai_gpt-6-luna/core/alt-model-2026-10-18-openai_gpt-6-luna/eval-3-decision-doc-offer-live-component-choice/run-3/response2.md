@@ -1,0 +1,3 @@
+I’ll document whole-visit revisions as the selected approach, why field-aware merging remains a credible alternative, and the obligations this creates for tablet sync and review/export.
+
+One detail is still open: during review, should the coordinator only choose one submitted complete revision, or may they author a new complete revision as the outcome? This determines whether review can produce new visit values or only select among preserved submissions.

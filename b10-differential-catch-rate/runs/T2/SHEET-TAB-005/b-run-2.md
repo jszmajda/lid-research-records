@@ -1,0 +1,11 @@
+Ubiquitous — Provenance: The Tax view's reserve-summary band SHALL contain exactly one row per element of the `tax::AnnualRow` slice passed to `render_tax`, in the caller-supplied order — sheets-view performs no sorting, grouping, deduplication, or recomputation of these rows (row count SHALL equal the input slice's length). Each row's Jurisdiction, Tax Year, Accrued, Moved, Paid, Outstanding, and Shortfall values SHALL be copied verbatim, kernel-exact, from that `AnnualRow`'s `jurisdiction`, `tax_year`, `accrued_cents`, `moved_cents`, `paid_cents`, `outstanding_cents`, and `shortfall_cents` fields respectively — sheets-view computes none of these five figures itself.
+
+Ubiquitous — Header/columns: The reserve-summary band SHALL be published under the header, in this exact order: Jurisdiction, Tax Year, Accrued, Moved, Paid, Outstanding, Shortfall — as its own typed range distinct from the per-accrual band, with no blank/label/embedded-header rows mixed among the entity rows.
+
+Ubiquitous — Value typing: Every cell in the reserve-summary band SHALL be an engine-written value (`Cell::Value`), never a live formula — the Tax view carries no `GOOGLEFINANCE`-derived figures, unlike Positions' live estimates.
+
+Ubiquitous — Formatting/normalization: Each of Accrued/Moved/Paid/Outstanding/Shortfall SHALL be formatted from its `Cents` integer as `sign + whole + "." + two-digit-cents`, where `sign` is `"-"` for negative values and empty otherwise, `whole = abs(value)/100`, `cents = abs(value)%100` zero-padded to 2 digits, with no thousands separators (e.g. `Cents(15000)` → `"150.00"`; `Cents(-500)` → `"-5.00"`; `Cents(0)` → `"0.00"`). Jurisdiction SHALL render as `"Federal"` for the Federal jurisdiction or `"State({code})"` (literal parentheses, code verbatim) otherwise. Tax Year SHALL render as the bare integer, no padding or separators.
+
+Unwanted behavior — Completeness: None of the five money columns SHALL ever render as an empty string; every row SHALL carry a formatted value for all five, including when the true value is zero (rendered `"0.00"`) — never omitted or left blank.
+
+Ubiquitous — No failure path: Rendering the reserve summary SHALL always succeed for any accruals/annual_rows input — it has no error/`Result` outcome (unlike Positions rendering, whose `DuplicateSymbolRow` error does not apply to the Tax reserve summary).

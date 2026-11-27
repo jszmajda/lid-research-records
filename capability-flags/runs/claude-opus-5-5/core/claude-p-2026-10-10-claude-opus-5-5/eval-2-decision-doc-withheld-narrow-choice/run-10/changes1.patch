@@ -1,0 +1,65 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..ee6d945 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..8a5a78a 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, and the two patterns overlap: a big screening runs while other editors are mid-comparison. The cache is designed so that a screening's one-use sheets cannot push the comparison sheets out.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,37 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### Eviction: 2Q
++
++Cached sheets are held in two queues, and every cached sheet is in exactly one of them:
++
++- **First-use queue** — sheets that have been served at most once since they were rendered. Ordered by admission time; being served does not reorder it.
++- **Reused queue** — sheets that have been served more than once. Ordered by most recent serve.
++
++A completed render is admitted to the tail of the first-use queue. Rendering is not a use: because a miss answers 202, the first 200 that hands the sheet to a requester is its first use and leaves it where it is. Any later 200 for that sheet is a reuse and moves it to the most-recent end of the reused queue; further serves from the reused queue refresh its position there. A sheet never moves back from the reused queue to the first-use queue.
++
++The first-use queue has a share of the 12 GiB budget, measured in bytes of JPEG data. When room is needed for an admission, victims are chosen one at a time until the new sheet fits, re-applying these rules for each victim:
++
++1. If the first-use queue, counting the sheet being admitted, would hold more than its share, evict its oldest sheet.
++2. Otherwise evict the least recently served sheet in the reused queue.
++3. If the reused queue is empty, evict the oldest sheet in the first-use queue.
++
++The share steers victim selection only. It does not reserve space: while the cache is under 12 GiB nothing is evicted, whichever queue is larger.
++
++The first-use share is 25% of the budget (3 GiB, about 1,500 typical 2 MiB sheets), leaving about 9 GiB (about 4,600 sheets) of reused sheets that a screening cannot displace: admissions take space from the reused queue only while the first-use queue is below its share. It is a worker configuration value, read at startup and not exposed through the preview interface.
++
++The consequence that matters for editors: once the first-use queue has filled its share, a screening of any length churns only that queue, so the most recently served 9 GiB of reused sheets are displaced only by other reused sheets. The cost is that reused sheets from a finished project leave only as newly reused sheets push them out, so a project switch warms up more slowly than under plain recency ordering.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q: a first-use queue and a reused queue | LRU; frequency-based eviction with aging | Editors alternate long sequential screenings with repeated comparisons. LRU has the least bookkeeping and follows a project switch fastest, but a long screening evicts the comparison sheets. Aged frequency counts retain popular clips but add counter maintenance and aging work and keep a finished project's favorites longest. 2Q keeps one-use screening sheets from displacing reused ones; its second queue and tunable share are accepted as the price. None of the three changes the preview interface, render concurrency, or disk budget. |
++| Promotion trigger | Second serve while the sheet is still cached | Promote only when a sheet is requested again after eviction, tracked by a list of recently evicted keys (full 2Q) | A comparison sheet is protected as soon as it is revisited, without first paying a second 450 ms render, and no third structure is kept. The cost is that two serves close together count as reuse. |
++| First-use share | 25% of the cache budget, configurable | Even split; a smaller first-use share | A screening needs only enough first-use room for sheets to be collected and revisited once; the larger remainder goes to the comparison working set the policy exists to protect. A starting value, to be tuned against pilot traffic. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Tune the first-use share against pilot hit rates once real screening and comparison traffic is available.

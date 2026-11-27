@@ -1,0 +1,6 @@
+I recommend keeping it as the **Decisions & Alternatives** row in `docs/intent/previews/previews-design.md` rather than creating a standalone decision doc:
+
+- **Isolated to one node:** The choice affects only the preview worker's private replacement tracking. `review-api`, the HTTP contract (`200`/`202`/`404`), the render queue, and the 12 GiB budget are all unchanged, and no other design node is sized around 2Q.
+- **Debate length isn't the test:** A cold reader looking at the landed design only needs to know *why 2Q over LRU or aged frequency*—which the Decisions & Alternatives row already settles (scan resistance for comparison sheets at the cost of extra queue bookkeeping and a size split).
+
+That said, if you still want a standalone `docs/intent/previews/decisions/cache-eviction-policy.md` capturing the full criteria and option analysis, say the word and I will write it. Otherwise, please let me know how you'd like to triage items 1–7 from the Phase 2 probe and whether we can proceed to **Phase 3 (EARS specs)**.

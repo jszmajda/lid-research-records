@@ -1,0 +1,7 @@
+I'd stick with the **Decisions & Alternatives** row and skip a full decision doc.
+
+- **The test is forward-looking, not how hard the debate was.** Long arguments often land in a table row. A full decision doc earns its place when the choice stays genuinely live for a cold reader *and* other design nodes are being sized around it.
+- **This choice is strictly local to `previews`.** All 2Q state stays private to the preview worker—`review-api`, the `200`/`202`/`404` contract, the render queue, and the 12 GiB budget are unaffected, so nothing outside `previews` leans on this decision and revisiting it later stays contained to one component.
+- **The table row already settles "why 2Q?"** It names LRU and aged frequency-based eviction and states the exact tradeoff (protecting comparison sheets from sequential screening scans at the cost of two queues and a tunable split).
+
+That said, it's your call—if you want a standalone record at `docs/intent/previews/decisions/cache-eviction-policy.md` (linked from `previews-design.md`) to keep the team from re-litigating the criteria later, say the word and I'll draft it. Otherwise, let me know your thoughts on `previews-design.md` and the probe items 1–7 so we can wrap up Phase 2.

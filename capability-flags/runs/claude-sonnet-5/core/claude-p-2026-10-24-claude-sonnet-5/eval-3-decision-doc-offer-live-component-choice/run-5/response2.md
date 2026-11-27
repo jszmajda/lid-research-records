@@ -1,0 +1,9 @@
+I wrote the decision doc at `docs/intent/record-store/decisions/concurrency-policy.md` and linked it from the LLD's Decisions & Alternatives row. It covers:
+
+- **Decision Elements**: five weighted criteria (scientific-relationship risk and review workload as major; administrator-independence and whole-visit preservation as moderate; worker-facing comprehensibility as minor), two tied explicitly to HLD tenets.
+- **Both options analyzed** against every criterion, each given its strongest honest case — including where field-aware merge wins (review workload) and where whole-visit revisions loses (same).
+- **Selection**: whole-visit revisions, reasoned from the criteria rather than asserted, naming the tenets it turns on.
+- **Why the other approach stays worth naming**: a scoped version of field-aware merging (a short, evidence-backed list of fields with no known scientific relationship to anything else) is the version that could come back — but only once the review queue itself shows evidence of which edits are safe, not as a guess now.
+- **Downstream obligations** spelled out concretely for both tablet-sync (base revision tracking, idempotency keys, plain current/pending status, stale-base handling) and review-export (comparison-not-merge UI, resolution provenance, "has a head" export rule, a queue sized for all concurrent edits rather than just real conflicts).
+
+Still open from last time: the edge-case probe surfaced 8 implementation-blocking gaps in the revision model (races on the same head, stacked competitions, resolution idempotency, whether promotion mints a new revision ID, etc.) — want to work through those now before we call the record-store LLD done, or defer them to Open Questions?

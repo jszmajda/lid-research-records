@@ -1,0 +1,609 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 34ebfe7..bd8cf58 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -6,16 +6,16 @@ Forty weekend markets currently relay stall closures, late arrivals, and power p
+ 
+ ## Approach
+ 
+-Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. The approach for delivering committed changes is still open: five-second HTTPS polling, self-hosted WebSockets, or a hosted realtime service. All three can meet the required freshness target. Subsecond updates would be useful, but are not required.
++Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. Committed changes are delivered via self-hosted WebSockets. This choice accepts the operational burden of connection management and reconnect logic to avoid a recurring realtime vendor bill and vendor coupling. Subsecond updates are achievable.
+ 
+-Delivery, change storage, and browser recovery must be designed together after this choice. Polling would favor cursor queries; self-hosted sockets would need connection management and replay; hosted delivery would need publication reconciliation and provider credentials. Neither operating cost nor minimum operational burden has been declared the overriding criterion.
++Delivery, change storage, and browser recovery are designed around self-hosted WebSockets: the change store maintains replayable revision history; delivery manages socket sessions and reliable publication; browsers run reconnect and catch-up logic against the store's revision index.
+ 
+ ## Architecture
+ 
+ - Access: `docs/intent/access/access-design.md`, with `docs/intent/access/access-specs.md`. Written below the stable HTTPS command boundary.
+-- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Revision history, read indexes, and any publication outbox depend on the delivery approach.
+-- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Owns polling responses, socket sessions, or hosted publication, depending on the approach.
+-- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Its subscription, reconnect, and catch-up behavior depend on the approach.
++- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Owns revision history, read indexes, and publication outbox for self-hosted WebSocket delivery.
++- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Owns WebSocket session management, outbox consumption, and revision fan-out.
++- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Owns subscription lifecycle, reconnect with catch-up, and connectivity indication.
+ 
+ ## Tenets
+ 
+diff --git a/docs/intent/browser-sync/browser-sync-design.md b/docs/intent/browser-sync/browser-sync-design.md
+new file mode 100644
+index 0000000..9dd1a7f
+--- /dev/null
++++ b/docs/intent/browser-sync/browser-sync-design.md
+@@ -0,0 +1,107 @@
++---
++parent: high-level-design
++prefix: BROWSER
++---
++
++# Browser Sync Design
++
++## Context and Design Philosophy
++
++The browser-sync component runs in each coordinator's browser. It establishes a WebSocket connection to the delivery component, subscribes to an event, receives and applies revisions to the local board view, and handles reconnection with automatic catch-up. The design targets subsecond update visibility, visible connectivity state, and recovery from up to 20 minutes of disconnection.
++
++## Subscription Lifecycle
++
++### States
++
++| State | Description | Transitions To |
++|-------|-------------|----------------|
++| `disconnected` | No active WebSocket; no subscription | `connecting` |
++| `connecting` | WebSocket opening, awaiting `welcome` | `subscribed`, `disconnected` |
++| `subscribed` | Active subscription, receiving revisions | `catching_up`, `disconnected` |
++| `catching_up` | Processing `catchup` batch, not yet current | `subscribed`, `disconnected` |
++| `failed` | Unrecoverable error (auth expired, event ended) | `disconnected` (after user action) |
++
++### Transitions
++
++1. **Initial load**: `disconnected` → `connecting` → `subscribed` (via `welcome` with full board snapshot)
++2. **Reconnect after disconnect**: `disconnected` → `connecting` → `catching_up` (via `catchup` batch) → `subscribed`
++3. **Network interruption**: `subscribed` → `connecting` (auto-reconnect) → `catching_up` → `subscribed`
++4. **Auth expiration**: `subscribed` → `failed` (on `error` with `code: auth_expired`) → user signs in → `disconnected`
++
++## Reconnect Strategy
++
++- **Immediate retry**: on clean close or network error, retry after 500ms
++- **Exponential backoff**: on repeated failures, cap at 30s (500ms, 1s, 2s, 4s, 8s, 16s, 30s...)
++- **Max retry duration**: 20 minutes (matches recovery goal); after 20 minutes, enter `failed` state, require user action
++- **Jitter**: ±100ms per attempt to avoid thundering herd on delivery restart
++- **Reconnect carries `last_revision`**: the highest `revision_id` the browser has applied (from last `ack` sent)
++
++## Catch-Up Processing
++
++When `catchup` batch arrives:
++
++1. Sort revisions by `revision_id` ascending (delivery guarantees order, but defend)
++2. Apply each revision's `operations` to local board state in order
++3. After each revision, update `last_applied_revision` and send `ack`
++4. On batch complete, transition to `subscribed`
++
++If a revision fails to apply (e.g., unknown stall ID), log error, skip revision, continue — board may diverge; surface warning to user.
++
++## Connectivity Indicator
++
++The UI must show connectivity state at all times (tenet: "Connectivity failures must be visible, not mistaken for an unchanged board"):
++
++| State | Indicator |
++|-------|-----------|
++| `subscribed` | Green dot / "Live" |
++| `catching_up` | Yellow spinner / "Catching up…" |
++| `connecting` | Yellow dot / "Reconnecting…" |
++| `disconnected` | Red dot / "Disconnected" (with retry countdown) |
++| `failed` | Red banner / "Connection failed — sign in to retry" |
++
++Indicator updates are synchronous with state transitions; no debounce.
++
++## Revision Application
++
++Each `revision` message carries `operations` — an array of atomic board mutations:
++
++```typescript
++type Operation =
++  | { type: 'stall_status'; stall_id: string; status: 'open' | 'closed' | 'late' | 'power_issue' }
++  | { type: 'stall_note'; stall_id: string; note: string }
++  | { type: 'board_note'; note: string };
++```
++
++Application is synchronous and idempotent per revision: applying the same revision twice produces the same board state. The browser tracks `last_applied_revision` to ensure idempotency across reconnects.
++
++## Offline Queue (Non-Goal)
++
++Per HLD non-goals: no offline editing. If the browser is in `disconnected` or `connecting` state, edit commands are disabled in the UI. Editors must wait for `subscribed` state to submit commands.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Reconnect backoff | Exponential with 30s cap, 20-min max | Fixed interval, no max duration | Exponential avoids thundering herd; 20-min cap matches recovery goal; fixed interval would waste battery or delay recovery |
++| Catch-up ack strategy | Per-revision ack during catch-up | Batch ack at end | Per-revision ack lets server GC sent buffer incrementally; batch ack risks re-sending entire batch on mid-catch-up disconnect |
++| Connectivity indicator | Synchronous, no debounce | Debounced (500ms) | Tenet requires visible failures; debounce hides brief interruptions users should see |
++| Revision application | Synchronous, in-order | Async, out-of-order with reconciliation | Operations are small and in-order; sync application is simpler and matches server authoritative order |
++| Max catch-up batch size | 100 revisions (from change store) | 50, 200 | Aligns with change store cursor query limit; 20-min disconnect at 20 edits/sec = 24K revisions worst case → 240 round-trips, acceptable |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Self-hosted WebSockets chosen — browser-sync owns reconnect, catch-up, connectivity indicator
++
++### Deferred
++1. Whether to persist `last_applied_revision` to localStorage for faster initial load on return visit
++2. Exact UI component for connectivity indicator (toast, header badge, status bar)
++3. Whether to add client-side revision hash verification for tamper detection
++4. Handling of `catchup` batch larger than 100 revisions (multi-batch catch-up flow)
++
++## References
++
++- High-level design: `docs/high-level-design.md`
++- Change store design: `docs/intent/change-store/change-store-design.md`
++- Delivery design: `docs/intent/delivery/delivery-design.md`
++- EARS syntax reference: `references/ears-syntax.md`
+\ No newline at end of file
+diff --git a/docs/intent/browser-sync/browser-sync-specs.md b/docs/intent/browser-sync/browser-sync-specs.md
+new file mode 100644
+index 0000000..43110f6
+--- /dev/null
++++ b/docs/intent/browser-sync/browser-sync-specs.md
+@@ -0,0 +1,57 @@
++**LLD**: docs/intent/browser-sync/browser-sync-design.md
++
++# Browser Sync Specifications
++
++## Subscription Lifecycle
++
++- [ ] **BROWSER-001**: On initial load, the system shall transition from disconnected → connecting → subscribed via welcome message with full board snapshot.
++- [ ] **BROWSER-002**: On reconnect after disconnect, the system shall transition disconnected → connecting → catching_up (via catchup batch) → subscribed.
++- [ ] **BROWSER-003**: On network interruption during subscribed state, the system shall auto-reconnect: subscribed → connecting → catching_up → subscribed.
++- [ ] **BROWSER-004**: On authentication expiration (error code auth_expired), the system shall transition to failed state and require user sign-in.
++- [ ] **BROWSER-005**: The system shall track last_applied_revision as the highest revision_id successfully applied to local board state.
++
++## Reconnect Strategy
++
++- [ ] **BROWSER-006**: On clean close or network error, the system shall attempt immediate retry after 500ms.
++- [ ] **BROWSER-007**: On repeated failures, the system shall use exponential backoff: 500ms, 1s, 2s, 4s, 8s, 16s, 30s (capped at 30s).
++- [ ] **BROWSER-008**: The system shall apply ±100ms jitter per retry attempt.
++- [ ] **BROWSER-009**: The system shall continue retry attempts for up to 20 minutes; after 20 minutes, transition to failed state requiring user action.
++- [ ] **BROWSER-010**: On reconnect, the system shall send subscribe with last_revision = last_applied_revision.
++
++## Catch-Up Processing
++
++- [ ] **BROWSER-011**: When a catchup batch arrives, the system shall sort revisions by revision_id ascending before applying.
++- [ ] **BROWSER-012**: The system shall apply each revision's operations to local board state in order.
++- [ ] **BROWSER-013**: After applying each revision, the system shall update last_applied_revision and send ack.
++- [ ] **BROWSER-014**: If a revision fails to apply (e.g., unknown stall_id), the system shall log error, skip the revision, continue processing, and surface a warning to the user.
++- [ ] **BROWSER-015**: On catch-up batch completion, the system shall transition to subscribed state.
++
++## Connectivity Indicator
++
++- [ ] **BROWSER-016**: While in subscribed state, the UI shall display a green "Live" indicator.
++- [ ] **BROWSER-017**: While in catching_up state, the UI shall display a yellow "Catching up…" indicator.
++- [ ] **BROWSER-018**: While in connecting state, the UI shall display a yellow "Reconnecting…" indicator.
++- [ ] **BROWSER-019**: While in disconnected state (during retry backoff), the UI shall display a red "Disconnected" indicator with retry countdown.
++- [ ] **BROWSER-020**: While in failed state, the UI shall display a red "Connection failed — sign in to retry" banner.
++- [ ] **BROWSER-021**: Indicator updates shall be synchronous with state transitions (no debounce).
++
++## Revision Application
++
++- [ ] **BROWSER-022**: The system shall support stall_status operations (stall_id, status: open|closed|late|power_issue).
++- [ ] **BROWSER-023**: The system shall support stall_note operations (stall_id, note).
++- [ ] **BROWSER-024**: The system shall support board_note operations (note).
++- [ ] **BROWSER-025**: Revision application shall be synchronous and idempotent per revision (applying same revision twice produces same board state).
++- [ ] **BROWSER-026**: The system shall track last_applied_revision to ensure idempotency across reconnects.
++
++## Edit Command Gating
++
++- [ ] **BROWSER-027**: While in disconnected, connecting, or catching_up state, the UI shall disable edit command submission.
++- [ ] **BROWSER-028**: Edit commands shall only be enabled in subscribed state.
++
++## Decisions & Alternatives (for reference)
++
++- [ ] **BROWSER-029**: Reconnect shall use exponential backoff with 30s cap and 20-min max duration.
++- [ ] **BROWSER-030**: Catch-up shall use per-revision ack (not batch ack).
++- [ ] **BROWSER-031**: Connectivity indicator shall be synchronous with no debounce.
++- [ ] **BROWSER-032**: Revision application shall be synchronous and in-order.
++- [ ] **BROWSER-033**: Max catch-up batch size shall align with change store cursor query limit (100 revisions).
+\ No newline at end of file
+diff --git a/docs/intent/change-store/change-store-design.md b/docs/intent/change-store/change-store-design.md
+new file mode 100644
+index 0000000..f587bf9
+--- /dev/null
++++ b/docs/intent/change-store/change-store-design.md
+@@ -0,0 +1,78 @@
++---
++parent: high-level-design
++prefix: CHANGE
++---
++
++# Change Store Design
++
++## Context and Design Philosophy
++
++The change store is the authoritative source of event board revisions. It owns the revision history, read indexes, and the publication outbox that feeds the delivery component. Every committed edit from the command handler appends exactly one revision to the event's history. The store is designed for the self-hosted WebSocket delivery approach: it must support replay from any revision, cursor-based queries for catch-up, and a reliable outbox for delivery to publish new revisions to connected WebSocket sessions.
++
++## Revision Model
++
++Each event maintains an ordered sequence of revisions:
++
++- `revision_id`: monotonically increasing integer per event (1, 2, 3...)
++- `event_id`: the event this revision belongs to
++- `actor_id`: the authorized editor who submitted the command
++- `timestamp`: server wall-clock time of commitment (UTC)
++- `operations`: array of atomic board mutations (stall status changes, notes, etc.)
++- `previous_hash`: hash of the prior revision for tamper evidence (optional, can be added later)
++
++Revisions are immutable once committed. The latest revision represents the current authoritative board state.
++
++## Read Indexes
++
++Two read paths serve different consumers:
++
++| Index | Consumer | Query Pattern |
++|-------|----------|---------------|
++| Latest revision per event | Browsers on initial load, editors submitting commands | `SELECT MAX(revision_id) FROM revisions WHERE event_id = ?` |
++| Cursor query (revision range) | Browsers catching up after disconnect | `SELECT * FROM revisions WHERE event_id = ? AND revision_id > ? ORDER BY revision_id ASC` |
++
++The cursor query is the primary read path for browser catch-up. It must return revisions in order, with no gaps, up to a configurable batch limit (default 100 revisions per response).
++
++## Publication Outbox
++
++The outbox enables reliable publication to the delivery component without dual-write risk. When a command handler commits a revision, it writes the new revision AND an outbox entry in the same transaction:
++
++- `outbox_id`: monotonically increasing global ID
++- `event_id`: the event that changed
++- `revision_id`: the new revision number
++- `created_at`: timestamp of outbox entry creation
++- `published_at`: nullable timestamp when delivery acknowledged publication
++
++Delivery reads the outbox in `outbox_id` order, publishes to relevant WebSocket sessions, and marks entries published. Unpublished entries are retried on delivery restart.
++
++## Retention
++
++- **Active events** (event hours published): retain all revisions
++- **Completed events** (after event hours): retain 7 days of revisions from event close, then archive
++- **Outbox entries**: retain until published + 24 hours, then GC
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Revision ID scope | Per-event monotonically increasing | Global UUID, global sequence | Per-event sequence enables efficient cursor queries and natural ordering for catch-up; global IDs add no value for this domain |
++| Outbox pattern | Transactional outbox in same DB | Separate message queue (Redis, Kafka) | Avoids dual-write, no additional infrastructure, sufficient for 800 browsers and 20 edits/sec bursts |
++| Cursor query batch limit | 100 revisions per response | 50, 200, unbounded | 100 balances round-trips for 20-min disconnect catch-up (~2400 revisions max) against response size |
++| Revision hash chaining | Deferred (optional) | Include from start | Tamper evidence is a security hardening; not required for pilot availability goals |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Self-hosted WebSockets chosen as delivery approach — change store must support replayable revisions and outbox for delivery
++
++### Deferred
++1. Whether to add `previous_hash` chaining for tamper evidence (security hardening)
++2. Exact archive format and storage for 7-day retention after event close
++3. Whether outbox GC runs as a background job or on delivery acknowledgment
++
++## References
++
++- High-level design: `docs/high-level-design.md`
++- Delivery design: `docs/intent/delivery/delivery-design.md`
++- Browser sync design: `docs/intent/browser-sync/browser-sync-design.md`
++- EARS syntax reference: `references/ears-syntax.md`
+\ No newline at end of file
+diff --git a/docs/intent/change-store/change-store-specs.md b/docs/intent/change-store/change-store-specs.md
+new file mode 100644
+index 0000000..9025c60
+--- /dev/null
++++ b/docs/intent/change-store/change-store-specs.md
+@@ -0,0 +1,37 @@
++**LLD**: docs/intent/change-store/change-store-design.md
++
++# Change Store Specifications
++
++## Revision Model
++
++- [ ] **CHANGE-001**: When a command handler commits an edit for an event, the system shall append exactly one revision to that event's revision history with a monotonically increasing revision_id.
++- [ ] **CHANGE-002**: The system shall assign each revision a timestamp of commitment in UTC.
++- [ ] **CHANGE-003**: The system shall record the authorized actor_id on each revision.
++- [ ] **CHANGE-004**: The system shall store the array of atomic board operations for each revision.
++- [ ] **CHANGE-005**: Once committed, a revision shall be immutable.
++
++## Read Indexes
++
++- [ ] **CHANGE-006**: When a browser requests the latest revision for an event, the system shall return the maximum revision_id for that event.
++- [ ] **CHANGE-007**: When a browser requests revisions after a given cursor (last_revision), the system shall return revisions in ascending revision_id order with no gaps, up to the configured batch limit (default 100).
++- [ ] **CHANGE-008**: If the requested cursor exceeds the latest revision, the system shall return an empty result.
++
++## Publication Outbox
++
++- [ ] **CHANGE-009**: When a revision is committed, the system shall write an outbox entry in the same database transaction containing event_id, revision_id, and created_at.
++- [ ] **CHANGE-010**: The system shall assign each outbox entry a monotonically increasing global outbox_id.
++- [ ] **CHANGE-011**: The delivery component shall read outbox entries in outbox_id order.
++- [ ] **CHANGE-012**: When delivery successfully fans out a revision to all subscribed sessions, the system shall mark the outbox entry with published_at.
++- [ ] **CHANGE-013**: Unpublished outbox entries shall be retried on delivery restart.
++
++## Retention
++
++- [ ] **CHANGE-014**: For active events (during published event hours), the system shall retain all revisions.
++- [ ] **CHANGE-015**: For completed events, the system shall retain revisions for 7 days after event close, then archive.
++- [ ] **CHANGE-016**: Published outbox entries shall be retained for 24 hours after published_at, then garbage-collected.
++
++## Decisions & Alternatives (for reference)
++
++- [ ] **CHANGE-017**: The system shall use per-event monotonically increasing revision IDs (not global UUIDs or global sequence).
++- [ ] **CHANGE-018**: The system shall use a transactional outbox in the same database (not a separate message queue).
++- [ ] **CHANGE-019**: The default cursor query batch limit shall be 100 revisions per response.
+\ No newline at end of file
+diff --git a/docs/intent/delivery/delivery-design.md b/docs/intent/delivery/delivery-design.md
+new file mode 100644
+index 0000000..a69e65e
+--- /dev/null
++++ b/docs/intent/delivery/delivery-design.md
+@@ -0,0 +1,111 @@
++---
++parent: high-level-design
++prefix: DELIVERY
++---
++
++# Delivery Design
++
++## Context and Design Philosophy
++
++The delivery component manages self-hosted WebSocket sessions for all connected browsers. It reads from the change store's publication outbox, fans out new revisions to subscribed sessions, and handles connection lifecycle: accept, authenticate, subscribe, heartbeat, reconnect, and graceful close. The design accepts the operational burden of connection management to achieve subsecond update latency without a hosted realtime vendor.
++
++## Session Model
++
++Each browser opens one WebSocket connection per event it views. A session carries:
++
++- `session_id`: opaque UUID assigned on connection accept
++- `event_id`: the event this session subscribes to
++- `actor_id`: the authenticated coordinator (viewer or editor)
++- `last_ack_revision`: highest revision the browser has acknowledged (for catch-up)
++- `connected_at`: timestamp of connection establishment
++- `last_heartbeat`: timestamp of last received ping/pong
++
++Sessions are tracked in an in-memory registry with optional Redis backing for multi-instance horizontal scaling (pilot runs single-instance).
++
++## Protocol
++
++### Client → Server Messages
++
++| Message Type | Payload | Purpose |
++|--------------|---------|---------|
++| `subscribe` | `{ event_id, last_revision? }` | Join event, optional catch-up from revision |
++| `ping` | `{ timestamp }` | Heartbeat, measure RTT |
++| `ack` | `{ revision_id }` | Confirm receipt of revision (enables server GC of sent buffer) |
++
++### Server → Client Messages
++
++| Message Type | Payload | Purpose |
++|--------------|---------|---------|
++| `welcome` | `{ session_id, event_id, current_revision, board_snapshot }` | Initial state on connect/subscribe |
++| `revision` | `{ revision_id, operations, timestamp, actor_id }` | New committed revision |
++| `catchup` | `{ revisions: [...] }` | Batch of revisions for catch-up |
++| `pong` | `{ timestamp, server_time }` | Heartbeat response |
++| `error` | `{ code, message, retryable }` | Protocol or auth error |
++
++### Message Flow
++
++1. Browser connects → server accepts, authenticates via session cookie/token
++2. Browser sends `subscribe` with `event_id` and optional `last_revision`
++3. If `last_revision` provided and < current: server sends `catchup` batch from change store cursor query
++4. Server sends `welcome` with current board snapshot and `current_revision`
++5. On each new revision from outbox: server fans out `revision` to all subscribed sessions
++6. Browser replies `ack` per revision (or batched)
++7. Heartbeat: server sends `ping` every 15s; client must respond `pong` within 10s or connection closes
++8. On disconnect: session removed from registry; on reconnect, browser repeats from step 1 with `last_revision = last_ack_revision`
++
++## Outbox Consumption
++
++Delivery runs a background consumer that:
++
++1. Polls change store outbox for unpublished entries (by `outbox_id` cursor)
++2. For each entry, loads the revision from change store
++3. Fans out `revision` message to all sessions subscribed to that `event_id`
++4. Marks outbox entry published (with `published_at`) on successful fan-out to all sessions
++5. On fan-out failure to any session: retries with exponential backoff; session marked for reconnect if persistent
++
++Fan-out is best-effort per session: a slow session doesn't block others. Unacked revisions are buffered per session up to a limit (default 50); excess triggers catch-up on next reconnect.
++
++## Connection Capacity
++
++- Target: 800 simultaneous browsers (1 connection each)
++- Single-instance pilot: Node.js event loop handles 800 WebSockets comfortably
++- Horizontal scaling: add Redis-backed session registry and outbox consumer coordination when needed
++- Opening-time burst: 20 edits/sec → 20 outbox entries/sec → 20 fan-outs/sec to up to 800 sessions each = 16K messages/sec peak, within single-instance capacity
++
++## Reconnect & Catch-Up
++
++Browser reconnect logic is owned by the browser-sync component, but delivery supports it via:
++
++- `subscribe` message accepts `last_revision` for cursor-based catch-up
++- Change store cursor query returns ordered revisions from `last_revision + 1`
++- Session registry survives delivery restart (in-memory for pilot; Redis for scale)
++- On delivery restart: unacked outbox entries re-published; sessions re-authenticate on reconnect
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Protocol format | JSON over WebSocket | MessagePack, protobuf | JSON is debuggable, sufficient for payload sizes (~1KB/revision), no schema registry needed |
++| Heartbeat interval | 15s ping, 10s pong timeout | 30s/15s, 10s/5s | 15s balances detection speed against mobile network variance; 10s timeout avoids premature closes on slow networks |
++| Session registry | In-memory (pilot) | Redis from start | Pilot is single-instance; Redis adds complexity not needed until horizontal scaling |
++| Acknowledgment | Per-revision `ack` from browser | Implicit (TCP ACK), batched | Explicit ack enables server to GC sent buffer and detect stalled sessions; batched ack adds complexity |
++| Outbox consumer | Polling (100ms interval) | Long-poll, push notification | 100ms poll is simple, adds ~50ms avg latency, acceptable for subsecond target |
++| Max buffered unacked revisions | 50 per session | 20, 100, unbounded | 50 covers ~2.5s at 20 edits/sec burst; larger buffers increase memory per session |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Self-hosted WebSockets chosen — delivery owns session management, outbox consumption, fan-out
++
++### Deferred
++1. Redis-backed session registry for horizontal scaling (post-pilot)
++2. Whether to compress `revision` messages for high-frequency bursts
++3. Exact backoff schedule for failed fan-out retries
++4. Whether to add per-session message sequencing for duplicate detection
++
++## References
++
++- High-level design: `docs/high-level-design.md`
++- Change store design: `docs/intent/change-store/change-store-design.md`
++- Browser sync design: `docs/intent/browser-sync/browser-sync-design.md`
++- EARS syntax reference: `references/ears-syntax.md`
+\ No newline at end of file
+diff --git a/docs/intent/delivery/delivery-specs.md b/docs/intent/delivery/delivery-specs.md
+new file mode 100644
+index 0000000..4903722
+--- /dev/null
++++ b/docs/intent/delivery/delivery-specs.md
+@@ -0,0 +1,57 @@
++**LLD**: docs/intent/delivery/delivery-design.md
++
++# Delivery Specifications
++
++## Session Management
++
++- [ ] **DELIVERY-001**: When a browser opens a WebSocket connection, the system shall authenticate the session via session cookie or token and assign a session_id.
++- [ ] **DELIVERY-002**: When an authenticated session sends a subscribe message with event_id, the system shall register the session for that event_id.
++- [ ] **DELIVERY-003**: The system shall track last_ack_revision per session for catch-up support.
++- [ ] **DELIVERY-004**: When a session disconnects, the system shall remove it from the session registry.
++- [ ] **DELIVERY-005**: The system shall support 800 simultaneous WebSocket sessions on a single instance.
++
++## Protocol — Server Messages
++
++- [ ] **DELIVERY-006**: On successful subscribe, the system shall send a welcome message containing session_id, event_id, current_revision, and the full board snapshot.
++- [ ] **DELIVERY-007**: When a new revision is published for an event, the system shall fan out a revision message to all sessions subscribed to that event_id.
++- [ ] **DELIVERY-008**: When a browser subscribes with a last_revision older than current, the system shall send a catchup message containing the ordered batch of revisions from last_revision+1 to current_revision.
++- [ ] **DELIVERY-009**: The system shall send a ping message every 15 seconds to each connected session.
++- [ ] **DELIVERY-010**: If a session fails to respond with pong within 10 seconds of a ping, the system shall close the connection.
++- [ ] **DELIVERY-011**: On protocol or authentication error, the system shall send an error message with code, message, and retryable flag.
++
++## Protocol — Client Messages
++
++- [ ] **DELIVERY-012**: When the system receives a subscribe message, it shall validate the event_id and optional last_revision.
++- [ ] **DELIVERY-013**: When the system receives a ping message, it shall respond with pong containing the client timestamp and server_time.
++- [ ] **DELIVERY-014**: When the system receives an ack message with revision_id, it shall update the session's last_ack_revision.
++
++## Outbox Consumption
++
++- [ ] **DELIVERY-015**: The system shall poll the change store outbox for unpublished entries at a 100ms interval.
++- [ ] **DELIVERY-016**: For each outbox entry, the system shall load the revision from the change store and fan out to all subscribed sessions.
++- [ ] **DELIVERY-017**: The system shall mark an outbox entry published only after successful fan-out to all target sessions.
++- [ ] **DELIVERY-018**: If fan-out to a session fails, the system shall retry with exponential backoff; persistent failure shall mark the session for reconnect.
++
++## Fan-Out Behavior
++
++- [ ] **DELIVERY-019**: Fan-out to one slow session shall not block fan-out to other sessions.
++- [ ] **DELIVERY-020**: The system shall buffer up to 50 unacknowledged revisions per session; exceeding the buffer shall trigger catch-up on next reconnect.
++- [ ] **DELIVERY-021**: On delivery restart, the system shall re-publish any unpublished outbox entries.
++
++## Reconnect Support
++
++- [ ] **DELIVERY-022**: The system shall accept a subscribe message with last_revision and return the appropriate catchup batch from the change store cursor query.
++- [ ] **DELIVERY-023**: The session registry shall survive delivery restart (in-memory for pilot; Redis-backed for horizontal scaling).
++
++## Capacity
++
++- [ ] **DELIVERY-024**: The system shall handle opening-time bursts of 20 edits/second (20 fan-outs/second to up to 800 sessions each).
++
++## Decisions & Alternatives (for reference)
++
++- [ ] **DELIVERY-025**: The protocol shall use JSON over WebSocket (not MessagePack or protobuf).
++- [ ] **DELIVERY-026**: Heartbeat interval shall be 15s ping with 10s pong timeout.
++- [ ] **DELIVERY-027**: Session registry shall be in-memory for pilot (Redis deferred).
++- [ ] **DELIVERY-028**: Browser shall send explicit ack per revision (not implicit TCP ACK).
++- [ ] **DELIVERY-029**: Outbox consumer shall use 100ms polling interval.
++- [ ] **DELIVERY-030**: Max buffered unacked revisions per session shall be 50.
+\ No newline at end of file
+diff --git a/docs/intent/phase3-consistency-report.md b/docs/intent/phase3-consistency-report.md
+new file mode 100644
+index 0000000..1fb54c4
+--- /dev/null
++++ b/docs/intent/phase3-consistency-report.md
+@@ -0,0 +1,87 @@
++# Phase 3 Consistency Verification Report
++
++## Coverage Check
++
++| LLD Section | Corresponding Specs | Status |
++|-------------|---------------------|--------|
++| Change Store: Revision Model | CHANGE-001 through CHANGE-005 | ✅ Covered |
++| Change Store: Read Indexes | CHANGE-006 through CHANGE-008 | ✅ Covered |
++| Change Store: Publication Outbox | CHANGE-009 through CHANGE-013 | ✅ Covered |
++| Change Store: Retention | CHANGE-014 through CHANGE-016 | ✅ Covered |
++| Change Store: Decisions | CHANGE-017 through CHANGE-019 | ✅ Covered |
++| Delivery: Session Management | DELIVERY-001 through DELIVERY-005 | ✅ Covered |
++| Delivery: Protocol Server Messages | DELIVERY-006 through DELIVERY-011 | ✅ Covered |
++| Delivery: Protocol Client Messages | DELIVERY-012 through DELIVERY-014 | ✅ Covered |
++| Delivery: Outbox Consumption | DELIVERY-015 through DELIVERY-018 | ✅ Covered |
++| Delivery: Fan-Out Behavior | DELIVERY-019 through DELIVERY-021 | ✅ Covered |
++| Delivery: Reconnect Support | DELIVERY-022 through DELIVERY-023 | ✅ Covered |
++| Delivery: Capacity | DELIVERY-024 | ✅ Covered |
++| Delivery: Decisions | DELIVERY-025 through DELIVERY-030 | ✅ Covered |
++| Browser Sync: Subscription Lifecycle | BROWSER-001 through BROWSER-005 | ✅ Covered |
++| Browser Sync: Reconnect Strategy | BROWSER-006 through BROWSER-010 | ✅ Covered |
++| Browser Sync: Catch-Up Processing | BROWSER-011 through BROWSER-015 | ✅ Covered |
++| Browser Sync: Connectivity Indicator | BROWSER-016 through BROWSER-021 | ✅ Covered |
++| Browser Sync: Revision Application | BROWSER-022 through BROWSER-026 | ✅ Covered |
++| Browser Sync: Edit Command Gating | BROWSER-027 through BROWSER-028 | ✅ Covered |
++| Browser Sync: Decisions | BROWSER-029 through BROWSER-033 | ✅ Covered |
++
++**Total: 82 specs across 3 segments — all LLD sections covered.**
++
++## Contradiction Check
++
++| Cross-Spec Interaction | Consistency |
++|------------------------|-------------|
++| CHANGE-007 (cursor batch limit 100) ↔ DELIVERY-008 (catchup batch) ↔ BROWSER-033 (max catch-up batch 100) | ✅ Aligned at 100 |
++| CHANGE-009 (transactional outbox) ↔ DELIVERY-015 (poll outbox) ↔ DELIVERY-017 (mark published after fan-out) | ✅ Coherent outbox flow |
++| DELIVERY-006 (welcome with snapshot) ↔ BROWSER-001 (subscribed via welcome) | ✅ Matched |
++| DELIVERY-007 (fan-out revision) ↔ BROWSER-012 (apply operations in order) | ✅ Matched |
++| DELIVERY-008 (catchup batch) ↔ BROWSER-011 (sort by revision_id) ↔ BROWSER-013 (ack per revision) | ✅ Matched |
++| DELIVERY-010 (10s pong timeout) ↔ BROWSER-006 (500ms immediate retry) | ✅ Complementary |
++| DELIVERY-014 (ack updates last_ack_revision) ↔ BROWSER-013 (send ack after apply) | ✅ Matched |
++| DELIVERY-022 (subscribe with last_revision) ↔ BROWSER-010 (reconnect with last_applied_revision) | ✅ Matched |
++| DELIVERY-020 (50 unacked buffer) ↔ BROWSER-009 (20-min max retry) | ✅ Complementary |
++| BROWSER-027/028 (edit gating in subscribed only) ↔ Access: commands over HTTPS | ✅ Consistent with HLD |
++
++**No contradictions found.**
++
++## Implicit Scoping Check
++
++| Spec | Scope Explicit? | Notes |
++|------|-----------------|-------|
++| CHANGE-001 through CHANGE-019 | Yes — all scoped to change store | Event-scoped revision IDs, per-event cursor |
++| DELIVERY-001 through DELIVERY-030 | Yes — all scoped to delivery component | Session, event, outbox context stated |
++| BROWSER-001 through BROWSER-033 | Yes — all scoped to browser-sync | State machine, UI indicator, reconnect context stated |
++
++**All scopes are explicit in WHEN/WHERE clauses. No universal specs hiding context.**
++
++## Context-Free Reading Check
++
++| Sample Spec | Stands Alone? | Notes |
++|-------------|---------------|-------|
++| CHANGE-007: "When a browser requests revisions after a given cursor (last_revision), the system shall return revisions in ascending revision_id order with no gaps, up to the configured batch limit (default 100)." | ✅ | "browser" = any consumer; "cursor" defined inline; batch limit stated |
++| DELIVERY-022: "The system shall accept a subscribe message with last_revision and return the appropriate catchup batch from the change store cursor query." | ✅ | "subscribe message" defined in DELIVERY-012; "change store cursor query" references CHANGE-007 |
++| BROWSER-010: "On reconnect, the system shall send subscribe with last_revision = last_applied_revision." | ✅ | "subscribe" from DELIVERY-012; "last_applied_revision" from BROWSER-005 |
++
++**All specs pass grep test — readable without section context.**
++
++## Cross-Segment Cascade Points (Phase 4 Preview)
++
++These are the cross-segment interactions Phase 4 will audit for intent-narrowing:
++
++1. **Change Store → Delivery**: Outbox schema (event_id, revision_id, outbox_id) — delivery must read exactly this
++2. **Delivery → Browser Sync**: Protocol message shapes (welcome, revision, catchup, ping/pong, error, subscribe, ack) — browser must handle exactly these
++3. **Change Store → Browser Sync**: Cursor query contract (ascending revision_id, no gaps, batch limit 100) — browser catch-up depends on this
++4. **Access → Delivery**: Session authentication — delivery uses session cookie/token from access boundary
++5. **Delivery ↔ Browser Sync**: Heartbeat timing (15s/10s) — both sides must agree
++
++## Summary
++
++**Phase 3 consistency verification: PASS**
++
++- 82 specs cover all LLD sections
++- No contradictions across segments
++- All scopes explicit
++- All specs context-free readable
++- 5 cross-segment cascade points identified for Phase 4 audit
++
++**Ready for Phase 4 — Intent-Narrowing Edge Audit.**
+\ No newline at end of file

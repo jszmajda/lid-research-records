@@ -1,0 +1,1 @@
+Done. The lid-coach review is complete. The project has a coherent design arrow (HLD → LLD → EARS) with clean linkage, but two high-priority findings: (1) the conflict-resolution decision uses wall-clock timestamps despite the LLD itself stating clocks are frequently wrong, and (2) the arrow stops at specs with no tests or code layer.

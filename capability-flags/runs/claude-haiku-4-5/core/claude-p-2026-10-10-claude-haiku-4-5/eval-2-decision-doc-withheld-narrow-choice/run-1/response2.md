@@ -1,0 +1,5 @@
+I already wrote one — that's the `decisions/eviction-policy.md` file I just created. Given the context you described (180-message thread, three meetings, settling after real debate), this absolutely cleared the bar. A cold reader will see the choice and wonder why 2Q over the other two; without that doc, they'd have to re-litigate it.
+
+The doc lays out the three options' trade-offs explicitly (scan vulnerability for LRU, aging tuning burden for frequency), shows why 2Q won on *both* major criteria (scan protection *and* operational simplicity), and memorializes why that mattered. That's load-bearing for future sessions — if the pilot shows the 10/90 split needs adjustment, or if distributed cache ever becomes relevant, the reasoning is there to pick up from.
+
+A table row alone wouldn't capture why you spent 180 messages on this rather than just picking LRU.

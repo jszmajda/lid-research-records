@@ -1,0 +1,6 @@
+Decision doc written at `docs/decisions/self-hosted-websocket-delivery.md`, linked from the HLD's Key Design Decisions entry. It's written to be read cold: context from the domain (800 browsers, event-hour bursts, coordinator population), seven weighted criteria — with the visible-connectivity criterion turning on the tenet — each of the three options given its strongest case and per-criterion verdicts, and a Selection that names plainly what we accepted (owning connection capacity and reconnect work) and what it obligates in the three downstream components. No gates: every option met the freshness, recovery, and availability floor, so the decision turns entirely on the weighted criteria.
+
+Still pending from my last stop:
+
+1. **Access segment fix (paused at the boundary):** may I correct the now-stale "still-open change-delivery approach" phrasing in `docs/intent/access/access-design.md:10`?
+2. **Phase 2 order:** take the three nodes change store first (delivery and browser sync lean on it), one at a time with a stop after each?

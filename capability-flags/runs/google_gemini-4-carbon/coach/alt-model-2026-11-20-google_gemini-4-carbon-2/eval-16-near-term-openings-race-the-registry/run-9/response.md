@@ -1,0 +1,31 @@
+*Intent-ready foundation — clean design tree, with missing workflow directives, unimplemented `[x]` specs, and an unrecorded tenet tension.*
+
+**Scorecard**
+- ✓ Intent structure & mutation hygiene — clean depth-2 node-as-folder layout (`intake`, `fulfillment`), crisp present-tense prose, zero history or `[obsolete]` residue, and Full mode matches project breadth
+- ✓ HLD discipline — concise problem, approach, and real tie-breaker tenets with no schemas or implementation detail bleeding upstream
+- ✗ Arrow completeness — specs are marked `[x]` implemented, yet no test or source files exist in the repository
+- ⚠ Configuration — `CLAUDE.md` carries `## LID` metadata (`Mode: Full`, `Version: 1.4.0`) but omits the LID workflow directives block
+- ⚠ Tenet cascade & decision capture — short-notice open portal checkout works against *First asked, first served* with no recorded exception or Decisions row
+- ⚠ LLD & spec precision — open rematch and booking lifecycle edges, missing `parent:`/`prefix:` frontmatter, and implicitly scoped EARS lines
+
+Visit Planner already has a focused HLD, well-separated Intake and Fulfillment leaf designs, and clean domain language; the highest-leverage next steps are reconciling `CLAUDE.md` via `/update-lid` and settling the short-notice checkout tradeoff before building tests and code.
+
+**Findings (9 total · 4 high · 4 medium · 1 low)**
+- **F1 (high):** `CLAUDE.md` declares `Mode: Full` and `Version: 1.4.0` but omits the `Linked-Intent Development` workflow directives block (reconcile via `/update-lid`) · *intent leads; code is compiled output* — specs drive implementation reliably only when every session is pointed at the workflow
+- **F2 (high):** Every spec in `intake-specs.md` and `fulfillment-specs.md` is marked `[x]` implemented while the repository contains no test or source files yet · *canonical arrow shape* — intent walks through `HLD → LLDs → EARS → Tests → Code`, with `[ ]` vs. `[x]` markers reflecting realized tests and code
+- **F3 (high):** Short-notice cancellations (≤36h) publish immediately to portal checkout for 20 minutes before scanning the waitlist (`fulfillment-design.md`, `FILL-003`/`FILL-004`), letting later-arriving shoppers pass earlier waitlist entries against *First asked, first served* with no recorded exception · *tenets capture forward-looking preference* — leaf designs lean with the HLD's tenets or explicitly record where and why an exception trades against one
+- **F4 (high):** `fulfillment-design.md` and `intake-design.md` leave load-bearing lifecycle edges open — per-opening exclusion on offer-expiry rematch (`FILL-001`/`FILL-002`, risking repeated 2-hour offers on the same unresponsive top `enteredAt` entry), closing `active` interest entries once a visit is booked, whether an active offer still counts as `"free"` in portal search, and staff actor capture on withdrawals · *LLDs close enough of the solution space* — designs specify enough state behavior that two agents land on compatible implementations without guessing
+- **F5 (medium):** The ≤36-hour cutoff and 20-minute delayed registry scan in `fulfillment-design.md` (as well as preserving `enteredAt` on time/site edits while resetting it on service changes in `intake-design.md`) sit in body prose with no `Decisions & Alternatives` row capturing rejected options and accepted costs · *docs carry current intent, written to be read cold* — non-obvious choices that stay live after landing record what was traded away so a cold reader can reconstruct the reasoning
+- **F6 (medium):** `intake-design.md` and `fulfillment-design.md` omit `parent:` and `prefix:` YAML frontmatter — leaving `fulfillment`'s mapping to `FILL-*` implicit — and `fulfillment-specs.md` omits the LLD's two-hour offer window · *effective intent-tree alignment* — leaf frontmatter and specs form an explicit, grep-walkable bridge between HLD, LLDs, and EARS IDs
+- **F7 (medium):** Several spec lines rely on surrounding prose for scope — `FILL-004`'s `"published opening"` overlaps with ordinary week-ahead published openings in `fulfillment-design.md`, `FILL-002` leaves `<36h` vs. `>36h` expiry rematch unscoped, `FILL-005` omits `active`, and `INTAKE-004` omits exact-payload and key-expiry conditions · *scope disambiguation* — each spec names its applicable context in its own clause so it stays unambiguous when read via `grep`
+- **F8 (medium):** `docs/high-level-design.md` omits Full-mode `Non-Goals`, `Key Design Decisions`, `Target Users`, and `Success Metrics`, leaving the system-of-record boundary between Visit Planner's normalized opening view and upstream clinic calendars implicit · *HLD is architecture and rationale* — the HLD sets explicit system boundaries, cross-component decisions, and falsifiable outcomes above leaf LLDs
+- **F9 (low):** `docs/high-level-design.md` lists its four tenets as unordered bullets rather than a numbered precedence order · *tenets capture forward-looking preference* — ordering tie-breakers shows which tenet wins when two pull in different directions
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/intake/intake-design.md`, `docs/intent/intake/intake-specs.md`, `docs/intent/fulfillment/fulfillment-design.md`, `docs/intent/fulfillment/fulfillment-specs.md`
+- Enumerated: 1 HLD, 2 leaf LLDs, 2 spec files (15 unique EARS IDs: `INTAKE-001`–`INTAKE-007`, `FILL-001`–`FILL-008`), 0 decision docs, 0 arrow-overlay files (`docs/arrows/` absent)
+- Code & test sampling: 0 source files and 0 test files present in repository; 0 `@spec` references
+
+Want me to walk through the findings in detail, focus on a theme or priority (such as the high-priority items or the Fulfillment queue tradeoff), or work through specific items together? You can also pick a single finding ID to dig into.
+
+If you have broader questions about using LID on Visit Planner — walking Phases 4–6 from specs into failing tests and code, when a choice warrants a standalone decision doc vs. a table row, or adding the arrow-maintenance overlay as the codebase grows — I can help with those too.

@@ -1,0 +1,10 @@
+Written up at `docs/decisions/delivery-transport.md`, and linked from the HLD's Key Design Decisions entry. It's built to be re-run by a cold reader:
+
+- **Context** — why the transport choice exists at all (it shapes three downstream nodes and sets the pilot's standing obligations) and the freshness/recovery targets, framed from the domain, not from our conversation.
+- **Decision Elements** — no gate separates the options (all three can hit 15s, 800 browsers, 20-min recovery), so it turns on four weighted criteria: vendor independence (major), and latency / operational burden / recurring cost (moderate). Recovery is noted as an obligation every option shares, not a scoring criterion.
+- **Options in the Domain** — each of the three given its strongest honest form, with a per-criterion verdict (strong/partial/weak) and the factual basis.
+- **Selection** — self-hosted WebSockets, winning on the major criterion (vendor independence eliminates the hosted service) and on latency vs. polling, with the **operational-burden cost named as deliberately accepted** — which is the "why we accepted that tradeoff" you asked for.
+
+One thing I kept honest in the doc, which ties back to my earlier item 2: the Selection notes that the project has **no recorded tenet** for a general "prefer owning the realtime path over vendor coupling" lean — this decision is just the first place that preference is exercised, and it operates *within* the existing "both permitted" tenet rather than against it. Per the decision-doc guidance, a decision leaning this hard on an unrecorded preference is a signal the project may be missing a tenet.
+
+So the tenet question from last turn is still open. Want me to **add that tenet** to the HLD (so this decision can cite it, and future realtime calls lean the same way), or leave the tenets as they are and let this decision carry the weighting on its own?

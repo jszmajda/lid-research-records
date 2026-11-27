@@ -1,0 +1,11 @@
+Overkill. A full decision doc isn't warranted here; the **Decisions & Alternatives row** already in `docs/intent/registry/registry-design.md:30` is the right level, and I won't create one unless you tell me to (with a warning that it's heavier than the choice needs).
+
+The skill applies the test from the **landed** state, not from how it felt to decide:
+
+- **"Went back and forth / looked close" is explicitly not the test** — it's a symptom. The guidance is blunt: "a table row can come out of a long argument," and "people who are offered a doc tend to say yes whether or not they need it." The skill names "however long the debate ran" as precisely when *not* to offer.
+- **An inherited constraint settles it.** The HLD tenets forbid runtime network access and state kiosks have no network route, which eliminates the HTTPS directory and managed search service as pass/fail gates, not as options to be scored. A cold reader of the landed design sees "local index" + "no network" and finds the choice native — nothing would tempt them to reverse it toward a forbidden option. A doc built to re-run the judgment would have almost no live trade-off to weigh (one gate removes two of three options). This is a named do-not-offer case.
+- **It affects only its own node** — the certificate interface is unchanged and no sibling nodes are sized around the result — another named do-not-offer condition. The offer trigger requires both "credible options traded against more than one criterion" *and* "other design nodes about to be sized around the result"; the second fails here.
+
+The row stays because a cold reader would still ask "why a local index and not the other two?" and one line settles it — the heuristic's *inherited constraint eliminated the rest* outcome, not the *genuinely live* outcome that earns a doc. Decision docs are rare; a directory full of them is a smell.
+
+The Phase 2 stop still stands: I'm waiting on your LLD review (numbered feedback), gap triage, the no-snapshot (REG-002) ruling, confirmation of no certificate cascade, and approval before Phase 3.

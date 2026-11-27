@@ -1,0 +1,3 @@
+A standalone decision doc would be **overkill here**. The choice is confined to the registry’s internal backend; the certificate interface and overall offline architecture stay unchanged. The new **Decisions & Alternatives** row already captures the selected approach, alternatives, and rationale for a future reader.
+
+The lengthy deliberation alone doesn’t justify a decision doc. I’d revisit that only if you expect the SQLite-versus-networked choice to remain actively contestable or want detailed evaluation criteria preserved for a future reversal.

@@ -1,0 +1,80 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..aa61e62 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup over a local index built on the kiosk. Its index layout and query path are private.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..a65e7f2 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,57 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. Snapshots hold roughly 90,000 records and may reach 150 MB; kiosks have 4 GB of RAM and no network route.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, and lookup all belong to this node. Lookups read a local embedded SQLite index built on the kiosk from an imported snapshot, so no part of the lookup path leaves the kiosk filesystem. Index file layout, query path, and storage locations are private to this node.
++
++## Index Layout
++
++One SQLite database file per imported snapshot generation, derived from that snapshot's NDJSON records:
++
++- `equipment(serial_key TEXT PRIMARY KEY, serial_raw TEXT, description TEXT, calibration_date TEXT, due_date TEXT)` — `serial_key` is the normalized serial (see *Lookup Behavior*); `serial_raw` carries the serial as written in the snapshot, for display and certificate text.
++- `snapshot_meta(snapshot_date TEXT, schema_version TEXT, index_format INTEGER)` — exactly one row. `index_format` is the layout version of the database file itself, distinct from the snapshot's schema version.
++
++Index files live in a registry-private directory, one file per generation. A small pointer file names the active generation and is the only thing a lookup consults to find its database.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import is a staged build, never an in-place edit:
++
++1. Verify the snapshot signature against the bundled public key and reject unsupported schema versions before reading any record.
++2. Build a new database file at a staging path, inserting records in a single transaction. The primary key on `serial_key` turns a duplicate normalized serial into a build-time conflict, which fails the import.
++3. Confirm the written record count matches the snapshot's record count, then write `snapshot_meta`.
++4. Rename the completed file into the registry directory and rewrite the pointer file atomically. The pointer rewrite is the activation step.
++
++Until the pointer is rewritten, lookups read the previously active generation, so a failure at any earlier step leaves the active snapshot in place and reports which step failed. Records in a staging build are never reachable through `findBySerial`.
++
++Uniqueness is enforced on the normalized key rather than the raw serial, because the normalized key is what lookup resolves: two records differing only in letter case would otherwise be indistinguishable to a technician's query.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalization trims surrounding whitespace and uppercases ASCII letters. Serial-number punctuation is significant and is preserved. The same normalization runs at index-build time and at query time, so the stored key and the query key cannot diverge.
++
++A lookup normalizes its input, resolves the pointer file to a generation, and selects on `serial_key` — a primary-key probe over roughly 90,000 rows, which keeps resolution well inside the 250 ms goal. The database is opened read-only, and SQLite pages in only what the probe touches, so a 150 MB snapshot never needs to be resident in kiosk memory.
++
++Every result carries the active generation's `snapshot_date`, including `NotFound`.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index built on the kiosk | On-site HTTPS directory service; managed search service | Both alternatives place a network dependency in the lookup path, which the kiosks' no-network-route tenet forecloses. |
++| Index representation | One SQLite file per snapshot generation | In-memory map built at startup; sorted flat file with binary search | SQLite keeps resident memory independent of the 150 MB snapshot ceiling on 4 GB kiosks, and makes activation an atomic file rename. |
++| Activation mechanism | Pointer file naming the active generation | Overwrite a single fixed database path | Overwriting cannot leave the previous snapshot available if the write fails partway, which the failed-import tenet requires. |
++| Serial uniqueness scope | Normalized serial key | Raw serial as written in the snapshot | Lookup resolves normalized keys; raw-only uniqueness would admit two records a single query cannot disambiguate. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Retention of superseded index generations and of imported snapshot files on the kiosk.
++2. Whether a kiosk whose `index_format` is superseded by a GaugeDesk upgrade rebuilds from a retained snapshot or waits for a fresh USB import.
++3. Result of `findBySerial` before any snapshot has been imported, where there is no snapshot date to report.

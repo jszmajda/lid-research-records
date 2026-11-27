@@ -1,0 +1,98 @@
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..3bb632c 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -13,12 +13,90 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, backend preparation, and lookup all belong to this node. Use a local embedded SQLite database as the lookup index. Each snapshot import creates a new database file, validates it completely, then atomically swaps it to become the active index.
++
++## SQLite Schema
++
++Each snapshot database contains two tables:
++
++**`metadata` table**:
++- `key TEXT PRIMARY KEY`
++- `value TEXT`
++
++Stores `snapshot_date` (ISO 8601 format) and `schema_version` as key-value pairs.
++
++**`equipment` table**:
++- `serial TEXT PRIMARY KEY`
++- `description TEXT NOT NULL`
++- `calibration_date TEXT NOT NULL` (ISO 8601)
++- `due_date TEXT NOT NULL` (ISO 8601)
++
++The `serial` field is the primary key and indexed by default. Serial numbers are stored in their normalized form (whitespace trimmed, ASCII letters uppercased). This performs normalization once at import rather than on every lookup.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import follows this sequence:
++
++1. **Signature verification**: Verify the snapshot signature using the bundled public key. Reject and halt on failure.
++2. **Schema version check**: Parse the schema version from the snapshot header. Reject unsupported versions and halt.
++3. **Database construction**: Create a new temporary SQLite file (`.sqlite-tmp` extension) separate from the active database. Begin a transaction.
++4. **Record validation and insertion**: Parse newline-delimited JSON records. For each record:
++   - Normalize the serial number (trim whitespace, uppercase ASCII letters)
++   - Validate required fields exist (serial, description, calibration_date, due_date)
++   - Insert into the equipment table
++   - SQLite's PRIMARY KEY constraint ensures uniqueness; detect constraint violations
++5. **Insert metadata**: Write snapshot_date and schema_version to the metadata table.
++6. **Commit transaction**: If all records inserted successfully, commit. On any error (constraint violation, malformed JSON, missing field), rollback and delete the temporary file.
++7. **Atomic activation**: Rename the temporary file to the active database filename (e.g., `registry.sqlite`). The filesystem rename is atomic. The old database file is moved to a backup name (e.g., `registry.sqlite.prev`) before the rename.
++8. **Cleanup**: On successful activation, the previous snapshot file can be retained as a rollback option or deleted. On failure at any step, the previous active database remains untouched and available.
++
++Import failure reports the specific validation error (signature invalid, unsupported schema, duplicate serial, malformed record) without exposing partially imported data.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize the input serial (trim whitespace, uppercase ASCII letters) then query:
++
++```sql
++SELECT serial, description, calibration_date, due_date 
++FROM equipment 
++WHERE serial = ?
++```
++
++Additionally retrieve snapshot_date from the metadata table. Return `Found(record, snapshotDate)` if a row exists, or `NotFound(snapshotDate)` if not.
++
++Serial-number punctuation (hyphens, slashes, periods) remains significant and is not normalized. The normalization is limited to whitespace and case to avoid false matches while tolerating common input variations.
++
++## File Locations
++
++- Active database: `~/.gaugedesk/registry.sqlite`
++- Temporary during import: `~/.gaugedesk/registry.sqlite-tmp`
++- Previous snapshot backup: `~/.gaugedesk/registry.sqlite.prev`
++- Bundled public key: application resource bundle
++
++The `~/.gaugedesk/` directory is created on first run if it doesn't exist.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|-------------------------|-----------|
++| Lookup index backend | Local embedded SQLite database | On-site HTTPS directory service; Managed search service (Algolia, Meilisearch) | SQLite provides predictable sub-250ms lookups without network dependencies, aligns with the HLD tenet that all lookups complete using local files, and requires no service runtime or credentials. The downside—each kiosk validates and rebuilds its own index when a snapshot arrives—is acceptable given infrequent updates. HTTPS directory would centralize index maintenance but requires network availability and timeout handling. Managed search service adds recurring cost and external connectivity concerns. |
++| Normalization scope | Whitespace and ASCII case only | Full punctuation stripping; Unicode normalization | Trimming whitespace and uppercasing ASCII letters handles common input variations (leading space, lowercase entry) without risking false matches. Stripping all punctuation could cause `ABC-123` and `ABC123` to collide when they are distinct equipment. Unicode normalization is unnecessary; serial numbers in this domain use ASCII. |
++| Snapshot swap mechanism | Atomic filesystem rename of complete database files | In-place table replacement within a single database file | Filesystem rename is atomic and leaves the previous snapshot intact until the new one is fully validated. In-place replacement risks leaving the database in an inconsistent state if import fails mid-transaction or the application crashes. Keeping separate files per snapshot also simplifies rollback. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++None yet.
++
++### Deferred
++
++1. **Snapshot retention policy**: How many previous snapshots to keep on disk. Current design keeps only `.prev`. If rollback beyond one snapshot is needed, define retention count and cleanup policy.
++2. **Progress indication for large imports**: 90,000 records import quickly enough that progress UI may be unnecessary, but empirical testing should confirm. If import takes more than a few seconds, surface progress to the user.
++3. **Concurrent lookup during import**: Current design allows lookups against the active database to continue during import preparation. Confirm this is acceptable or if a "snapshot updating" indicator is needed.
++
++## References
++
++- SQLite documentation: https://www.sqlite.org/lang.html
++- NDJSON format: http://ndjson.org/
++- HLD tenets on local-file-only operation and USB snapshot updates

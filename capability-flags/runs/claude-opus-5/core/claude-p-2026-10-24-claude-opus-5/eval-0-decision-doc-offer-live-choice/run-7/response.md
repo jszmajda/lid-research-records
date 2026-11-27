@@ -1,0 +1,21 @@
+Phase 1 (HLD) is updated. Three edits to `docs/high-level-design.md`:
+
+**Approach** — now states the selected route instead of the open question:
+
+> Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. Committed changes reach browsers over self-hosted WebSocket connections: the server keeps a persistent connection per connected browser and pushes each newly committed event revision over it. HTTPS stays the path for commands and for fetching a board snapshot; the socket carries only outbound change notification. Subsecond updates are useful, but are not required.
+>
+> Running the connections is the project's own responsibility, and delivery, change storage, and browser recovery are designed around that. Delivery owns socket sessions — accepting, authorizing, heartbeating, and dropping them — and must hold the full browser population as well as the reconnect surge that follows a server restart or network blip. The change store keeps a replayable revision sequence per event, so a browser can be carried forward from its last-seen revision instead of resynced blind, and hands committed revisions to delivery reliably enough that no commit goes silently undelivered. Browser sync holds the connection, notices when it is lost, reconnects with backoff, and catches up from its last-seen revision before resuming live updates.
+
+**Architecture** — the three unwritten nodes now name their real ownership rather than branching on the approach: change store owns the per-event revision sequence, replay reads, and reliable publication to delivery; delivery owns WebSocket session lifecycle, subscription authorization, connection capacity, and the push; browser sync owns connection hold, loss detection, reconnect backoff, and catch-up from a last-seen revision.
+
+**Key Design Decisions** — added, keeping the rejected options and their costs on the page so a cold reader isn't tempted to reverse it:
+
+> **Self-hosted WebSockets deliver committed changes.** Browsers hold a server-pushed socket rather than polling or subscribing through a managed service. Five-second HTTPS polling is the simplest thing to operate — stateless, no connection capacity to own — but spends repeated reads on an unchanged board and leaves several seconds of lag. A hosted realtime service reaches low latency with the least connection operations, but carries recurring fees and couples the board to one provider's subscription model. Self-hosted sockets were chosen for fast updates with no realtime vendor in the path, accepting the costs that come with it: the project owns connection capacity, heartbeats, and reconnect behavior, and the change store must keep revisions replayable so a reconnecting browser can be caught up.
+
+Goals and Non-Goals needed no change — the 15-second freshness target and 800-browser capacity are requirements the socket route meets, not statements about the route.
+
+Two things for you before I move on to Phase 2:
+
+1. **Record the choice as a full decision doc?** This one clears the bar for an offer: three credible options traded against latency, recurring cost, vendor coupling, and operations burden, and all three remaining nodes are about to be sized around the result — a cold reader might well re-litigate it. The Key Design Decisions entry above is the lighter alternative and is already in place. Want me to add `docs/decisions/change-delivery-approach.md` with the options, criteria, and selection at full resolution, or is the entry enough?
+
+2. **One tenet to settle.** Owning connection capacity creates a class of choices no spec will anticipate: what happens when the server is at its connection limit. The two defensible leans are *protect the browsers already connected, refusing new connections* versus *admit everyone and let every connection degrade*. Which way should MarketBoard lean — or would you rather leave it out of the tenet list and let the delivery node decide it concretely? Anything else about this approach you want pinned as a tenet while we're at the root?

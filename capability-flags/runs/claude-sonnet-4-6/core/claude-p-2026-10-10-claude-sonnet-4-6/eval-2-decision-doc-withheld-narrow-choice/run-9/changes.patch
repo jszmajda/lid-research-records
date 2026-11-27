@@ -1,0 +1,63 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..9ccdd22 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache managed with a two-queue (2Q) eviction policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..6a65dc8 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -21,6 +21,30 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, the worker evicts entries until the new sheet fits. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### 2Q Eviction
++
++The cache uses a two-queue (2Q) eviction policy. Two structures hold live entries:
++
++- **Q1** — a FIFO queue for newly admitted sheets. Every completed sheet enters Q1 on admission.
++- **Qm** — an LRU queue for sheets referenced more than once. A Q1 hit promotes the entry to Qm's head; a Qm hit moves it to Qm's head. Promotion is a move: total cache byte usage is unchanged.
++
++**Pre-admission eviction**: A single pass runs before each admission, evicting from Q1's tail until the new sheet fits within both the Q1 byte budget and the 12 GiB total budget. If Q1 drains completely and space is still needed, the pass continues evicting from Qm's tail.
++
++**Q1 byte budget**: Q1 is limited to a configurable fraction of the 12 GiB budget (default: 20%, ~2.4 GiB), set at startup. The Q1 budget must be at least one maximum sheet size; setting it smaller is a misconfiguration.
++
++During a sequential screening, newly admitted sheets cycle through Q1. Once Q1 reaches its byte budget, each new admission evicts the oldest Q1 entry — scan sheets do not reach Qm and do not displace comparison sheets already promoted by repeated access.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (FIFO Q1 + LRU Qm) | LRU; frequency-based eviction with aging | Editors alternate sequential screenings with repeated comparison sessions. LRU exposes comparison sheets to scan eviction. Frequency-based eviction with aging protects popular clips but requires counter maintenance and aging, and can retain stale favorites after a project switch. 2Q shields promoted sheets from scan churn with no counter bookkeeping, at the cost of a tunable Q1 byte budget. |
++| Q1 default byte budget | 20% of cache budget (~2.4 GiB) | Higher (larger scan buffer); lower (more Qm headroom) | At 2 MiB per sheet, 20% absorbs ~1,200 unique screening sheets before Q1 begins recycling. The remaining ~9.6 GiB holds ~4,800 Qm sheets. Tunable at startup. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++1. **Admission serialization**: Up to four render jobs may complete simultaneously and attempt concurrent admission. The required serialization or lock scope is not specified; this applies to the existing PREVIEW-004 eviction requirement regardless of eviction policy.
++2. **Concurrent promotion and eviction on the same entry**: Whether a Q1 hit and a tail-eviction targeting the same entry resolve cleanly under concurrent access is unspecified; this is subsumed by the admission serialization question above.
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..5ecd685 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,8 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++- [ ] **PREVIEW-006**: When a preview sheet is admitted to the cache, the system SHALL place it in Q1 (the short-term FIFO admission queue).
++- [ ] **PREVIEW-007**: When a cache request hits an entry held in Q1, the system SHALL promote that entry to the head of Qm (the main LRU queue) before serving the JPEG.
++- [ ] **PREVIEW-008**: When a cache request hits an entry held in Qm, the system SHALL move that entry to Qm's head before serving the JPEG.
++- [ ] **PREVIEW-009**: When admitting a new sheet, the system SHALL evict entries from Q1's tail, then from Qm's tail if Q1 is empty, until the sheet fits within both the Q1 byte budget and the 12 GiB total cache budget.
++- [ ] **PREVIEW-010**: The cache SHALL enforce a configurable Q1 byte budget (default 20% of the 12 GiB total cache budget, ~2.4 GiB) set at startup; the Q1 budget SHALL be configured to at least one maximum sheet size.

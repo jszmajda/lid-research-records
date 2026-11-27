@@ -1,0 +1,190 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 55f85ac..1198adf 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -15,11 +15,11 @@ Provide offline capture, a server-side record store, and a review-to-export work
+ | Node | Responsibility | Design | State |
+ |---|---|---|---|
+ | site-catalog | Maintain stable plot references and distribute the field catalog | docs/intent/site-catalog/site-catalog-design.md | Drafted |
+-| record-store | Accept visit submissions and define how concurrent edits become a current record | docs/intent/record-store/record-store-design.md | Drafted; concurrency choice open |
++| record-store | Accept visit submissions and define how concurrent edits become a current record | docs/intent/record-store/record-store-design.md | Drafted |
+ | tablet-sync | Keep local drafts, submit changes, and explain server outcomes to field workers | docs/intent/tablet-sync/tablet-sync-design.md | Not written |
+ | review-export | Present review work and produce the partner's reviewed CSV | docs/intent/review-export/review-export-design.md | Not written |
+ 
+-The concurrency mechanism belongs to record-store, not this HLD. Tablet-sync and review-export depend on that node's unresolved choice: it determines submission metadata, the shape of review work, and which record states can enter an export. Those two designs must wait for its contract.
++The concurrency mechanism belongs to record-store: whole-visit revisions, where competing submissions produce distinct revisions a coordinator selects between. Tablet-sync and review-export may now be designed; their contracts depend on record-store's submission envelope and contested-state representation.
+ 
+ ## Tenets
+ 
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..2452d16 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -5,37 +5,149 @@ prefix: REC
+ 
+ # Record Store
+ 
+-## Context
++## Context and Design Philosophy
+ 
+-This node owns visit persistence and the meaning of a current visit when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a catalog plot ID. Updates can arrive days after their starting state was fetched. The server must not treat arrival order as evidence that one worker's observations are more authoritative.
++This node owns visit persistence and defines how a visit's authoritative state is determined when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a plot in the site-catalog. Workers submit complete visit snapshots; the server retains every submitted snapshot and uses a revision model to detect and surface conflicts for coordinator review.
+ 
+-Tablet-sync and review-export are not yet designed. Their contracts depend on the concurrency mechanism selected here. Neither the HLD nor the catalog contract selects that mechanism.
++Arrival order is not treated as authority. A worker who corrects their observation after reconnecting should not silently lose to an earlier submission.
+ 
+-## Architecture
++## Revision Model
+ 
+-The record store exposes authenticated submission, current-state retrieval, submission-history retrieval, and review-outcome operations. Persistence keeps original submissions, their authors, and server receipt times. A submission carries an idempotency key so a connection failure does not create another edit on retry.
++Every accepted submission creates a **revision**: a complete, immutable snapshot of a visit's fields. A revision carries:
+ 
+-A visit's scientific fields include observation date, observer list, species cover estimates, and notes. Some edits are unrelated, such as correcting an observer name and adding a missing species. Other edits are related, such as revising a species identification and its cover estimate. The server cannot infer all such relationships from field names.
++| Field | Type | Notes |
++|---|---|---|
++| revision_id | UUID | Server-generated on acceptance |
++| visit_id | UUID | Identifies the visit |
++| base_revision_id | UUID \| null | Revision the worker edited from; null for the first submission to a visit |
++| author_id | string | Authenticated worker identity |
++| received_at | timestamp | Server receipt time |
++| payload | object | observation_date, observers, species_cover, notes |
+ 
+-The selected concurrency policy will define the remaining submission metadata and review operations. They are deliberately not specified yet.
++Revisions form a directed acyclic graph rooted at null. Each revision has exactly one parent (its base) and may have any number of children (subsequent submissions based on it).
+ 
+-## Submission and Retrieval
++**Sequential edits** produce a linear chain: R1 → R2 → R3. Each revision is the sole child of the one before it.
+ 
+-Authenticate the submitting worker and validate field types and plot references before accepting a submission. Preserve the original payload separately from any later resolved or combined representation. A retry with the same key and identical payload returns the original acceptance result; reuse with a different payload is rejected.
++**Competing revisions** arise when two or more revisions share the same parent: R2 and R3 both base on R1. This signals that two workers edited the same visit from identical starting state without coordinating. The same fork pattern applies at the null base (two independent first submissions to a visit).
+ 
+-Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
++## Visit State Machine
+ 
+-## Open Design Choice: Concurrent Visit Edits
++A visit is in exactly one of three states at any time:
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++- **Unsubmitted** — no revisions accepted for this visit
++- **Current** — revisions accepted, no unresolved fork; the tip revision is the authoritative state
++- **Contested** — one or more unresolved forks exist; no single revision is authoritative
+ 
+-Two approaches remain credible:
++Transitions:
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++| From | Trigger | To |
++|---|---|---|
++| Unsubmitted | First revision accepted (base = null, no competition) | Current |
++| Current | New revision whose parent is the current tip | Current |
++| Current or Unsubmitted | New revision whose parent already has a child revision | Contested |
++| Contested | Coordinator resolution closes the last open fork | Current |
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++A visit in Contested state is excluded from the export-eligible set until all forks are resolved.
+ 
+-## Downstream Contract Work
++## Submission Envelope
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++A submission carries:
++
++| Field | Type | Notes |
++|---|---|---|
++| visit_id | UUID | Client-generated; references a catalog plot |
++| idempotency_key | UUID | Prevents duplicate creation on retry |
++| base_revision_id | UUID \| null | The revision the worker edited from |
++| payload | object | observation_date, observers, species_cover, notes |
++
++Server validation on submission:
++- Field types well-formed
++- Plot reference exists in site-catalog
++- base_revision_id is null or a known revision for this visit
++- Idempotency key not already accepted with a different payload
++
++The acceptance response carries: submission_id, revision_id, visit_status (current or contested), and — when contested — the IDs and authors of the competing revisions at the newly created fork. This lets tablet-sync immediately surface the contest to the field worker without a separate poll.
++
++Identical competing payloads (two workers submitting the same field values from the same base) still produce competing revisions requiring coordinator confirmation. The server cannot determine whether the agreement is coincidental or represents coordinated intent.
++
++## Concurrent Submission Detection
++
++On each accepted submission, the server checks whether the new revision's base already has another accepted child for the same visit. If yes, a fork is recorded at that base and the visit transitions to Contested.
++
++A fork is identified by its base_revision_id (including null). Multiple forks can coexist if a visit's history has accumulated multiple branch points; each requires a separate coordinator resolution.
++
++## Review Work Representation
++
++For a contested visit, the review work package for a single fork contains:
++
++- The fork's base_revision_id (or null)
++- The base revision's payload, for context
++- All competing revisions at that fork: revision_id, author_id, received_at, payload
++
++When a visit has multiple forks, they are presented in base-first order: the fork closest to the root (oldest base, or null) is resolved first, since later forks may depend on the parent fork's outcome.
++
++## Resolution Operation
++
++A coordinator resolves a fork by selecting one competing revision as the accepted state. The resolution records:
++
++| Field | Notes |
++|---|---|
++| accepted_revision_id | The revision selected as authoritative |
++| coordinator_id | Identity of the coordinator |
++| contributing_revision_ids | All competing revision IDs at this fork |
++| resolved_at | Server timestamp |
++
++The accepted revision becomes the new tip at the resolved fork. If no unresolved forks remain, the visit transitions to Current.
++
++The first submitted resolution for a fork is accepted; a subsequent resolution attempt for an already-resolved fork is rejected. This keeps resolution outcomes deterministic when two coordinators work the queue simultaneously.
++
++After resolution, a tablet that submits based on a pre-resolution revision (a stale base) creates a new fork against the accepted tip. The system handles this identically to any other fork; the visit returns to Contested.
++
++## API Contract
++
++| Endpoint | Method | Body | Response |
++|---|---|---|---|
++| /submissions | POST | Submission envelope | {submission_id, revision_id, visit_status, competing_revisions?} |
++| /visits/{id} | GET | — | {status, current_revision?, revision_count} |
++| /visits/{id}/revisions | GET | — | Ordered revision list with base links |
++| /review/contested | GET | — | Paginated contested visit list |
++| /review/contested/{id} | GET | — | Next unresolved fork with competing revisions |
++| /review/contested/{id}/resolve | POST | {accepted_revision_id, coordinator_id, contributing_revision_ids} | {resolution_id, visit_status} |
++
++## Downstream Contract for Tablet-Sync and Review-Export
++
++Both nodes are sized around this contract; they must not invent their own concurrency semantics.
++
++**Tablet-sync must:**
++- Persist the revision_id received on the most recent successful submission; this becomes the base_revision_id for the worker's next edit to that visit.
++- Handle a visit_status: contested response and surface the competing revision details to the field worker.
++- Reuse the idempotency_key on retry of an unacknowledged submission; never generate a new key for the same attempted edit.
++
++**Review-export must:**
++- Implement a fork comparison view driven by the /review/contested/{id} response, showing competing revisions side-by-side with author and timestamp.
++- Filter the export set to visits in Current state only; Contested visits are not included.
++- Record coordinator identity on each resolution (it flows through to the resolution record kept here).
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Concurrency policy | Whole-visit revisions | Field-aware three-way merge | See note below |
++| Competition detection trigger | Two revisions sharing the same base_revision_id | Any second submission to same visit | Allows sequential edits without generating review work; only genuine forks signal competition |
++| Base for initial submission | Null sentinel | Server-created epoch revision | Explicit null makes the initial submission unambiguous without requiring the server to pre-create placeholder state |
++| Fork resolution order | Base-first (closest to root resolved first) | Any order | Later forks may depend on the parent fork's resolution outcome; base-first prevents coordinators from selecting a revision whose own lineage is still contested |
++| Concurrent resolution conflict | First submitted resolution wins; subsequent rejected | Last-write-wins; optimistic lock with retry | Simple and safe; two coordinators resolving the same fork simultaneously is rare and the outcome of either selection is acceptable — the key requirement is that exactly one resolution is recorded |
++| Identical competing payloads | Always require coordinator review | Auto-resolve as uncontested | The server cannot determine whether agreement is coincidental; coordinator confirmation keeps the audit trail complete |
++
++**Note on the field-aware merge alternative.** Field-aware three-way merge has a genuine operational advantage: independent field edits — one worker corrects an observer name, another adds a missing species — would auto-combine without generating review work. For a team producing 6,000 visits a season with two coordinators, a lower review queue has real value. The reason it was set aside: field edits in vegetation surveys are not scientifically independent even when they touch different schema fields. A species identification and its associated cover estimate are related; a note revision and an observer-name correction are not — but the server has no way to know which relationships exist. Merge rules conservative enough to be safe (treating all field pairs as potentially related) recover most of the review volume they would have saved. Rules aggressive enough to matter require ongoing botanical domain expertise to maintain correctly and risk silently combining edits that should have been reviewed.
++
++## Open Questions & Future Decisions
++
++### Deferred
++1. Whether coordinators may submit a synthesis revision (a new payload combining fields from competing revisions) rather than selecting an existing revision as-is. The resolution endpoint currently requires an accepted_revision_id pointing to an existing revision; a synthesis path would require a new submission type and extends the contract.
++2. Validation rules for contributing_revision_ids in a resolution request: whether the server requires this list to match exactly the competing revisions it knows about at the fork, or accepts a subset.
++
++## References
++
++- docs/high-level-design.md — architecture and tenets
++- docs/intent/site-catalog/site-catalog-design.md — plot reference validation

@@ -1,0 +1,9 @@
+The decision doc is written: `docs/intent/record-store/decisions/concurrent-visit-edits.md`, linked from the LLD's Decisions table row.
+
+It covers what you asked for:
+
+- **Why the merge approach would still be considered** — it's given its strongest honest representation, and the Selection section names the exact re-litigation trigger: if coordinator review volume from concurrent edits grows enough to routinely delay the Friday export, the trade should be revisited, ideally with automatic combination scoped to field groups the team has reviewed as scientifically independent. The whole-visit choice knowingly concedes review workload; it wins on scientific integrity (major, anchored to the no-silent-loss tenet) and implementation burden.
+- **Decision machinery a cold reader can re-run** — two inherited gates (no silent loss, no arrival-order authority) plus six weighted criteria, with each option analyzed against every one.
+- **Downstream accommodations** — Selection closes with explicit obligations: tablet-sync must retain base revision IDs per pending edit, submit whole payloads (not deltas), keep per-edit idempotency keys across retries, surface pending-competition and resolution outcomes to field workers, and re-base post-resolution edits; review-export must build the comparison view over competing revisions, hold unresolved visits out of the CSV, and keep provenance at revision granularity — an exported value is one authored revision's payload, never a server-assembled combination.
+
+Still open from the probe before I draft the EARS specs (Phase 3): your triage of the six edge-case items — tip-after-fork semantics, post-resolution edits on losing bases, re-resolution, resolution vs. a racing submission, withdrawal of a competing submission, and the idempotency/error-shape details. Which should go into the LLD now, which deferred, and which do you want to leave to the spec pass?

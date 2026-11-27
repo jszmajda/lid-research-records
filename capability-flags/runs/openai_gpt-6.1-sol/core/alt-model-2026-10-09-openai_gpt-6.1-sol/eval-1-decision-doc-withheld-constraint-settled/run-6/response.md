@@ -1,0 +1,90 @@
+Updated `docs/intent/registry/registry-design.md` with the SQLite design below. The backend choice is recorded in its Decisions & Alternatives table: the HLD’s offline-only constraint settles the choice, so a standalone decision document isn’t warranted.
+
+## Registry design — review draft
+
+**Parent:** high-level-design  
+**Spec prefix:** REG
+
+### Context
+
+Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+
+### Architecture
+
+Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+
+Snapshot validation, SQLite index preparation, activation, and lookup all belong to this node. Each kiosk builds its own embedded SQLite database from a signed USB snapshot. The database and its filesystem paths are private to the registry. Lookup uses local files and requires no running database service or network access.
+
+The signed snapshot is the source of registry data; the SQLite database is its derived lookup index. Inventory corrections arrive through replacement snapshots rather than edits to the kiosk database.
+
+### SQLite Storage
+
+Each prepared snapshot has a separate database containing:
+
+- Snapshot metadata: schema version and snapshot date.
+- Equipment records: the original serial number, a normalized serial lookup key, equipment description, calibration date, and due date.
+
+The normalized lookup key has a unique index using exact, binary comparison. The original record values remain available for the lookup result. Snapshot metadata and equipment records are stored together so a result’s date identifies the same snapshot as its record.
+
+Build the database by streaming the snapshot records into a transaction rather than loading the whole snapshot into memory. The design targets 90,000 records and snapshots up to 150 MB on a kiosk with 4 GB of RAM. Exact indexed queries target the HLD’s 250 ms lookup goal; kiosk measurements are needed to verify it.
+
+### Snapshot Import
+
+1. Copy the snapshot and signature manifest from USB to a private staging location on the kiosk. Validation and index construction use this staged copy.
+2. Verify the signature using the bundled public key and reject unsupported schema versions before preparing an index for activation.
+3. Validate each record and insert it into a new SQLite database. Apply the lookup normalization to serial numbers before checking uniqueness; two serial numbers with the same normalized key make the snapshot ambiguous and reject the import.
+4. Commit the completed database, close its writer, and verify that the database can be opened and queried with its snapshot metadata intact.
+5. Publish the prepared database as the active snapshot only after validation and index construction succeed.
+
+Serialize imports within a kiosk. Keep staging and prepared databases separate from the active database. Signature, schema, record-validation, SQLite, or storage failures discard the candidate and report the failed stage with a useful diagnostic. The previous active snapshot remains available.
+
+### Activation and Lookup Lifetime
+
+Store each completed database in an immutable snapshot directory. An active-snapshot reference identifies the directory used by new lookups. Publish a replacement by atomically replacing this reference on the same local filesystem after the new database is durably written. The reference replacement is the activation boundary.
+
+Each lookup acquires one active database handle and reads both the record and snapshot date through that handle. A lookup already in progress may complete against the previous snapshot; subsequent lookups use the newly activated one. Keep the previous database available until its outstanding readers have finished. Published databases are opened read-only.
+
+After an interrupted import, startup opens the database identified by the active reference. Unpublished staging data is never selected as the active registry. Failure before reference replacement leaves the previous snapshot selected; failure after replacement selects the completed replacement. Filesystem durability guarantees and recovery from a damaged active database need confirmation before implementation.
+
+### Lookup Behavior
+
+Remove surrounding whitespace and convert ASCII lowercase letters to uppercase before lookup. Apply the same normalization during import. Serial-number punctuation and non-ASCII letter case remain significant.
+
+Use a parameterized equality query against the unique normalized key. A matching row produces `Found(record, snapshotDate)`; a completed query with no matching row produces `NotFound(snapshotDate)`. Both results use the metadata from the database acquired for that lookup. Database failures are not equipment misses; the unavailable-registry behavior remains an open question below.
+
+### Decisions & Alternatives
+
+| Decision | Chosen | Alternatives Considered | Rationale |
+|---|---|---|---|
+| Lookup backend | Local embedded SQLite index built by each kiosk | On-site HTTPS directory; managed search service | The HLD requires local-file lookup with no runtime network access. SQLite supports predictable exact lookups without a service; each kiosk accepts the cost of validating and rebuilding its index. HTTPS would require lab connectivity and timeout handling; managed search would require external connectivity, credentials, and recurring cost. |
+| Serial uniqueness | Unique normalized lookup key | Uniqueness of raw serial strings only | Lookup ignores surrounding whitespace and ASCII letter case, so raw-only uniqueness could admit two records for the same query. |
+| Replacement publication | Separate immutable database and atomic active-reference replacement | Rebuild the active database in place | Preparing a replacement independently preserves the last valid snapshot during import failures and keeps partially imported records out of lookups. |
+
+### Open Questions & Future Decisions
+
+1. What should technicians and certificate preparation see before the first valid import, or when the active database cannot be opened? `NotFound(snapshotDate)` describes a completed lookup, not registry unavailability; the existing interface does not specify an unavailable result.
+2. Which kiosk filesystem and SQLite durability settings support the activation boundary, and what recovery policy applies if an already published database or active reference is damaged?
+3. What are the supported snapshot schema versions, required field formats, signature-manifest format, and precise whitespace normalization rules? These define validation shared by imports and lookups.
+4. How much staging space can a kiosk reserve, and when should previous databases and source snapshots be removed? Replacement preparation needs space alongside the active database.
+
+### References
+
+- [GaugeDesk high-level design](docs/high-level-design.md)
+- [Registry specifications](docs/intent/registry/registry-specs.md)
+- [Certificate design](docs/intent/certificates/certificates-design.md)
+
+---
+
+## Review findings and questions
+
+The independent LLD gap probe confirmed the open questions above and identified these additional gaps:
+
+5. **Input and query errors:** What happens for empty or invalid lookup input, or a database error during a lookup?
+6. **Replacement ordering:** Are older snapshots, same-date snapshots with different contents, and identical re-imports accepted?
+7. **Reader lifetime:** What synchronization prevents activation or cleanup from retiring a database while a lookup is acquiring it?
+8. **Signature coverage:** How does the manifest bind the records, schema version, and snapshot date to the exact staged data used to build the index?
+9. **Publication outcome:** How is an import reported if activation succeeds but a later durability, cleanup, or reporting operation fails?
+
+The coherence check also found that `docs/high-level-design.md` still says the backend “remains open.” Its architecture and certificate contract otherwise fit this selection. The registry EARS cover the existing core behavior; SQLite-specific refinements belong in the next phase. There are no tests or implementation files yet. `git diff --check` passed.
+
+**Do you approve this design direction?** Please identify which numbered gaps you want resolved in the LLD now and which may remain deferred. Also, may I align the HLD’s stale backend description with the SQLite selection?

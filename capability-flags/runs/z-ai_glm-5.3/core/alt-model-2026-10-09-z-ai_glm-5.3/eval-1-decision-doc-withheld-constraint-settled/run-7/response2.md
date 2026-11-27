@@ -1,0 +1,5 @@
+I'd say overkill. The test is whether a cold reader of the *landed* system would re-litigate the choice — and here the HLD's no-runtime-network tenet eliminates both alternatives before weighing starts. A decision doc exists to preserve a tradeoff that stays live; once the tenet is doing the eliminating, the Decisions & Alternatives row already carries everything a future reader needs to re-run the judgment (the two alternatives, and that the tenet — not taste — is what rules them out). That the deliberation felt close is a symptom of the debate, not of the landed result; the skill is explicit that however long the argument ran, an inherited-constraint-settled choice gets a row, not a doc.
+
+If the offline tenet ever relaxes (kiosks gain a network route, say), *that* change would reopen the question — but then the right move is revisiting the tenet itself, not archeology on this choice.
+
+Shall I take that as settled and continue with the LLD/gap triage from the stop?

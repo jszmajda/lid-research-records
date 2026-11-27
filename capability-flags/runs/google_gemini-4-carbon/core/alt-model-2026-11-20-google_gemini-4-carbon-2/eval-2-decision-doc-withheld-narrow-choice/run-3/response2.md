@@ -1,0 +1,11 @@
+I’d recommend **keeping it as the `Decisions & Alternatives` row in `previews-design.md`** rather than adding a standalone decision doc.
+
+The test is **looking forward from the landed design, not looking back at the deliberation**:
+
+1. **Debate length isn't what a future reader needs.** Three meetings and 180 messages explain why the team is tired of the topic, not what a cold maintainer needs to understand the system. A long argument can still land cleanly in one table row, and per fresh-author rules, none of that deliberation history would go into a decision doc anyway.
+2. **Nothing outside `previews` leans on this choice.** By tenet and architecture, replacement tracking is strictly private to the preview worker — `review-api`, the `200`/`202`/`404` HTTP contract, the 4-slot FIFO render queue, and the 12 GiB disk cap are identical under LRU, aged frequency, and 2Q. No other design node is sized around 2Q, so revisiting it later touches only internal cache bookkeeping.
+3. **The table row already settles a cold reader's question.** A cold reader *would* ask "why two queues instead of plain LRU?", which is why this earns a `Decisions & Alternatives` row rather than nothing. That row already records all three options and the exact trade-off (scan resistance during sequential screenings vs. recency adaptation on project switches vs. counter/aging overhead) right beside the cache design, without adding another file to maintain.
+
+That said, it’s your call: if you still want a standalone cold-read decision doc at `docs/intent/previews/decisions/cache-eviction-policy.md` (for example, to lay out explicit weighted criteria for re-evaluating against pilot hit-rate telemetry, at the cost of extra doc surface for a single-node mechanism), say the word and I’ll draft it and link it from the table row.
+
+Would you like to stick with the table row or add the decision doc — and how would you like to handle the Phase 2 probe questions (1–6) above before we move to `previews-specs.md`?

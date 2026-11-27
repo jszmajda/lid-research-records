@@ -1,0 +1,133 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..168700e 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -6,11 +6,11 @@ Six metrology kiosks help 35 technicians check calibration records before prepar
+ 
+ ## Approach
+ 
+-Accept signed registry snapshots from approved USB media. Expose a stable serial-number lookup interface to a certificate component that produces local PDF files. Registry records are read-only on the kiosk; the central inventory team remains responsible for corrections and new snapshots.
++Accept signed registry snapshots from approved USB media. Each kiosk builds a local index over the snapshot it imports, so that serial-number lookup needs no network access and no running service. Expose a stable serial-number lookup interface to a certificate component that produces local PDF files. Registry records are read-only on the kiosk; the central inventory team remains responsible for corrections and new snapshots.
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, the kiosk-local lookup index, and lookup. Lookups are served by a local embedded SQLite index that each kiosk builds from the snapshot it imports.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..55c3b20 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -13,12 +13,106 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Every lookup is served from a local embedded SQLite index that lives on the kiosk. The index is built from the imported snapshot; no lookup touches the network and no service has to be running. Snapshot validation, index construction, index activation, and lookup all belong to this node. The certificates node never sees the snapshot file, the index, or SQLite.
++
++## Kiosk Artifacts
++
++The registry keeps three kinds of artifact under the kiosk's registry data directory:
++
++| Artifact | Contents | Lifecycle |
++|---|---|---|
++| Active index | One SQLite database holding the records of the active snapshot and that snapshot's metadata | Exactly one is active; the active pointer names it |
++| Retained snapshot | The signed snapshot file the active index was built from | One file, the active snapshot's; superseded snapshots are deleted after activation |
++| Staging area | Scratch space for a snapshot being validated and an index being built | Emptied at the start of an import and discarded on failure |
++
++The active pointer is a small file holding the file name of the active index. It is replaced by an atomic rename, so a reader sees either the old pointer or the new one, never a partial one. Lookups resolve the pointer on every call. A pointer naming an index file that is missing means the kiosk has no registry data.
++
++A built index is disposable: it can always be reconstructed from the retained snapshot file. The retained snapshot is therefore the kiosk's durable copy of the registry data, and the index is a derived artifact.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++An import runs on the kiosk, from media a technician carries in, and has three stages.
++
++1. **Accept.** Copy the snapshot from the approved media into the staging area. Verify the signature manifest with the bundled public key. Reject a snapshot whose schema version is not supported.
++2. **Build.** Parse the newline-delimited JSON records, validate each record against the snapshot's field rules, and check that serial numbers are unique after normalization. Build a SQLite index in the staging area from the parsed records.
++3. **Activate.** Move the built index into the index location for that snapshot, then replace the active pointer so that it names the new index file. Only once the pointer has been replaced are the superseded index file and the superseded snapshot file deleted.
++
++Replacing the pointer is the commit point of an import. Before it, lookups still serve the previous snapshot; after it, lookups serve the new one. A failure in any stage leaves the previously active index in place and in use. The import reports which stage failed and why; a rejected signature, an unsupported schema version, a duplicate serial number, and a record that fails validation are each reported as such.
++
++If the kiosk is interrupted between stages, the next startup reconciles the registry directory: the index file named by the active pointer is kept, every other index file is deleted, and every snapshot file other than the one the active index was built from is deleted. An interrupted import therefore leaves either the previous snapshot or the new one active, never a mixture of the two.
++
++## Index Schema and Normalization
++
++The index holds one table of records keyed by the normalized serial number:
++
++| Column | Meaning |
++|---|---|
++| `serial_key` | Normalized serial number; primary key |
++| `description` | Equipment description |
++| `calibration_date` | Calibration date |
++| `due_date` | Calibration due date |
++
++A second table holds index metadata: the snapshot date, the snapshot identifier, the snapshot schema version, the index format version, and the record count.
++
++A registry record carries the serial number, the equipment description, the calibration date, and the calibration due date. Dates are held and returned as ISO-8601 calendar dates (`YYYY-MM-DD`). The snapshot date and the snapshot identifier are copied verbatim from the signed snapshot's own metadata; the registry never derives either from the file name or the file's modification time. The record count is the number of rows in the records table, and it is checked when the index is activated.
++
++Normalization trims leading and trailing characters from the set {space, tab, carriage return, line feed, form feed, vertical tab} and uppercases the ASCII letters `A`–`Z`. Every other character is left exactly as it is, so serial-number punctuation and non-ASCII letters stay significant. The same normalization applies when building the index and when looking up, so a serial that differs from the stored one only in case or padding still matches. A serial that is empty after normalization is not a valid serial.
++
++The primary key enforces uniqueness of the normalized serial. The index is written once at build time and opened read-only for lookups.
++
++These invariants hold at all times:
++
++- The active index is the index the active pointer names, and no other index is active.
++- The active index was built from the retained snapshot, and the two agree on snapshot date, snapshot identifier, and snapshot schema version.
++- The record count in the index metadata equals the number of rows in the records table.
++- The active index's index format version is the format the running build produces.
++
++## Lookup
++
++`findBySerial(serial)` opens the active index, normalizes the requested serial, and queries by `serial_key`. A hit yields `Found(record, snapshotDate)`; a miss yields `NotFound(snapshotDate)`. The snapshot date comes from the index metadata, so it survives restarts and always identifies the data the lookup actually read.
++
++A lookup never opens the network. A kiosk with no active index — a fresh kiosk that has not yet imported a snapshot, or a kiosk whose index files were removed — cannot answer a lookup; it reports that it has no registry data rather than answering `NotFound`, because an absent serial and an absent index are different facts for the technician.
++
++Lookups and imports may run at the same time. A lookup resolves the active pointer when it runs, so it reads either the previous snapshot in full or the new one in full.
++
++## Index Freshness and Rebuilding
++
++The index is rebuilt in full from every imported snapshot; it is never patched in place. A snapshot is a complete replacement of the registry, so a full rebuild avoids any possibility of the index disagreeing with the snapshot it claims to represent.
++
++Rebuilding the index from the retained snapshot is a second operation, distinct from an import. It checks the retained snapshot's schema version, rebuilds the index in the staging area, and activates it through the same pointer replacement an import uses. It does not re-verify the snapshot's signature, because the snapshot was verified when it was imported, but it does re-check the schema version, because the running build may no longer support that schema version. A rebuild that fails leaves the previous index active and is reported as a rebuild failure rather than an import failure, because no media was involved.
++
++## Performance
++
++A lookup is a primary-key query against a table of about 90,000 rows. The index file is on the order of tens of megabytes and is resident in the operating system's page cache, so a lookup stays well inside the 250 ms goal on a kiosk with 4 GB of RAM. The cost of the SQLite choice is paid at import time instead: every snapshot costs one full rebuild.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | A local embedded SQLite index built on each kiosk from the snapshot it imports | An on-site HTTPS directory; a managed search service | Kiosks have no network route during operation, so a network-backed directory or service would not satisfy the lookup being local; both also add a dependency the registry would have to fail gracefully around. An embedded index needs no service to run, no credentials, and no recurring cost, and lookups are predictable and offline. The cost is that each kiosk validates and rebuilds its own index when a snapshot arrives, which happens inside this node and is invisible to the certificates node. |
++| Index construction | Full rebuild from the snapshot at every import | Incremental update of the existing index | A snapshot is a complete replacement of the registry, so incremental update would add bookkeeping to avoid work the replacement model does not need. A rebuild is bounded by the snapshot size and leaves an index that provably matches its snapshot. |
++| Activation | Build the index in staging, then replace the active pointer | Overwrite the live index in place; swap the index file itself | A partially built index must never be reachable by a lookup, and a failed build must leave the previous snapshot usable. Replacing a pointer gives both; swapping files would depend on filesystem rename semantics across the kiosk's storage. |
++| Lookup key | The normalized serial is stored as the primary key | Store the raw serial and normalize at query time | One key then serves both the uniqueness check and the query, and the two can never disagree about what counts as a duplicate. Normalizing at build time also keeps the punctuation rules in one place. |
++| Snapshot retention | The active snapshot file is kept on the kiosk; superseded snapshot files are deleted | Keep every imported snapshot; keep none | Keeping the active snapshot lets the kiosk rebuild its index locally after a format change or a damaged index file, without a technician carrying media in. Keeping every snapshot would grow kiosk storage without a second use for the older files. |
++| Superseded index files | Deleted once the new index is active | Retain the previous index for rollback | A failed import already leaves the previous index untouched, and a bad snapshot can be re-imported from media or corrected upstream, so a retained copy has no rollback path that needs it. |
++
++## Open Questions & Future Decisions
++
++### Open
++
++1. **Lookup outcome shape.** `findBySerial` is documented as returning `Found` or `NotFound`, but a lookup can also fail because there is no usable index. Either the result type gains an outcome for that case, so the certificates node can render it, or the two outcomes stay as documented and the failure is raised as an error the caller handles separately.
++2. **Recovery from a damaged or missing index.** Either the kiosk rebuilds the index from the retained snapshot on its own and the technician waits, or it reports that the index is unusable and a technician has to act. Both the missing-index case and the damaged-index case need one answer.
++3. **Import concurrency.** Either one import runs at a time on a kiosk, started by the technician in front of it, or imports may be driven unattended and must survive being interrupted and re-run.
++4. **Importing an older snapshot.** Either a snapshot whose date is not newer than the active snapshot's date is rejected, or any valid snapshot becomes active and the kiosk reflects whatever was imported last.
++5. **The serial number in a returned record.** Either the record carries the serial as the snapshot spelled it, or the record carries the normalized serial and the normalization rule is part of the display contract.
++6. **A record that fails validation.** Either the whole import fails and names the offending record, or invalid records are skipped and counted and the import succeeds with a subset of the snapshot's records.
++
++### Deferred
++
++1. How long an import may take, and whether the kiosk shows import progress, is settled when the import workflow is designed.
++2. The field-level rules of a snapshot record, and the maximum record count and snapshot size the import stage accepts beyond the documented 90,000 records and 150 MB snapshots, are settled when the snapshot format is specified.
+ 
+-## Lookup Behavior
++## References
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++- `docs/high-level-design.md` — project-level architecture and tenets.
++- `docs/intent/certificates/certificates-design.md` — the consumer of `findBySerial`.

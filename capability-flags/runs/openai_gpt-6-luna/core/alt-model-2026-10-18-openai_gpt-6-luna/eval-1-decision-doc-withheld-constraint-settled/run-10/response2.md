@@ -1,0 +1,1 @@
+A separate decision doc would be overkill. The HLD’s no-runtime-network constraint makes a local index the natural fit, and the LLD’s Decisions & Alternatives row records why SQLite was chosen over the service-based options.

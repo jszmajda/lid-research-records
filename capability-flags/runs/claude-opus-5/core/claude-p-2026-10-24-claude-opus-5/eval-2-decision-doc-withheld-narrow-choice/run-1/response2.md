@@ -1,0 +1,11 @@
+My honest answer is no — and the length of the argument is the specific thing the test tells me to ignore.
+
+The question isn't "was this hard to decide?", it's "would a cold reader of the result question it or be tempted to reverse it?" Reading the landed design, I don't think they would. The HLD states the workload up front — long sequential screenings alternating with repeated comparisons of a small set — and the first line of the Private Cache section says sheets earn their place by being requested more than once. A reader who knows that screenings are scans will find 2Q the obvious fit, not a choice to re-litigate. The Decisions row already names LRU and aged-frequency with why each was trimmed, so even a skeptical reader has what they need in one line.
+
+The other half of the bar is whether other design nodes are about to be sized around the result, and nothing is. All three options were explicitly contained inside the preview worker: same HTTP contract, same four-job queue, same 12 GiB budget. The review API can't observe which one we picked. A decision doc earns its place when the next several nodes lean on the reasoning; here nothing leans on it.
+
+What the three meetings actually produced is the three rows now in the table — the bookkeeping cost accepted deliberately, the reuse signal set strictly, the metadata kept non-persistent. Those are the durable outputs. A doc on top of them would mostly memorialize the debate, and that's the residue the *docs carry current intent* rule strips.
+
+The genuine risk I'd flag the other way: if the sizing split turns out badly during the pilot and someone proposes reverting to LRU, they'll re-run this argument from scratch. But that's a deferred question already recorded, and the Decisions row tells them why LRU lost — I don't think it needs more.
+
+That said, it's your call and I'll write it if you want it; if the pilot does reopen the policy, that's the moment it would start earning its place. Otherwise, my ruling on the two open calls stands as the thing I need from you — the strict reuse signal, and the 3 GiB / 9 GiB / 6,000-key split — plus which of the seven probe items to fix in the LLD, and I'll move to Phase 3.

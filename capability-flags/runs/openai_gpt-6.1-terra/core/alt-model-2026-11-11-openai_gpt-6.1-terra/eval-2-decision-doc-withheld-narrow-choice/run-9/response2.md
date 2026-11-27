@@ -1,0 +1,3 @@
+I’d record it in the preview design’s **Decisions & Alternatives** table. The choice has real tradeoffs, but its effects stay inside the preview cache, so a standalone decision doc would add more ceremony than it needs. The table can preserve the reasons for choosing 2Q over LRU and aged frequency eviction.
+
+If you still prefer a standalone doc, I’m happy to write one. Otherwise, do you approve the HLD check and a decision-table entry so I can proceed with the preview design?

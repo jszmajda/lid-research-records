@@ -1,0 +1,3 @@
+I’d use a **Decisions & Alternatives table row**: 2Q affects only the preview cache, and a concise rationale can preserve why scan resistance outweighed the extra bookkeeping and tuning. The length of the debate alone doesn’t make a separate document necessary.
+
+That said, I can write a full decision doc if you’d prefer the tradeoffs recorded in more depth. Would you like that, and do you approve the HLD check so I can continue?

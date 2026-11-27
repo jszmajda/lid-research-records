@@ -1,0 +1,13 @@
+**Ubiquitous:** The Positions view tab SHALL contain exactly one row per Symbol, and that row's Symbol cell SHALL be the key the marks read-back/settle pass (`read_marks`) uses to match a `GOOGLEFINANCE` price-cell reading back to its position — row identity is symbol identity, not row index.
+
+**Ubiquitous:** No normalization (case-folding, trimming, alias substitution) is applied to the Symbol for keying/duplicate-detection purposes. The raw `Symbol` string as stored in `Snapshot.positions` is compared for equality as-is; ticker-alias resolution (`resolve_ticker`) is applied only to build the display/formula ticker (`Price`, `Quote Date` columns), never to the keying value.
+
+**Event-driven (guard):** WHEN rendering the Positions tab (`render_positions`) iterates `Snapshot.positions` and encounters a symbol that has already produced a row earlier in this same rendering pass, THE system SHALL NOT emit the additional row, SHALL abort rendering immediately, and SHALL return `Err(ViewError::DuplicateSymbolRow(symbol))` carrying an owned clone of the offending symbol — never silently drop, merge, or overwrite the duplicate.
+
+**Unwanted-behavior:** IF the one-row-per-symbol invariant is ever violated (e.g., a future non-`Map` position source yields two entries for one symbol), THEN the system SHALL error loudly (`DuplicateSymbolRow`) rather than silently double-rendering a symbol or corrupting the read-back keying — this guard is explicitly defensive: `Snapshot.positions` is a `Map<Symbol,_>`, so uniqueness holds structurally and this branch is unreachable via the real API today, but the requirement/guard must remain in place for a hypothetical non-Map source.
+
+**State/ordering:** Rows are emitted in `Snapshot.positions`' iteration order (a `BTreeMap`, i.e., ascending Symbol order); duplicate detection uses a `BTreeSet<&Symbol>` "seen" set populated in that same order, so the *first* occurrence of a symbol always succeeds and any *later* occurrence in iteration order is the one that trips the error (no other tie-break rule).
+
+**Downstream keying (read_marks):** The settle-pass reader (`read_marks`) SHALL key each `PriceReading` by Symbol against the caller-supplied `symbols` list, producing at most one `Mark`/degrade entry per symbol; it performs no duplicate detection itself and relies on the caller (Positions render) to have already guaranteed uniqueness.
+
+**Error semantics:** `ViewError::DuplicateSymbolRow(Symbol)`'s `Display` SHALL render as its `Debug` form (e.g., `DuplicateSymbolRow("AMZN")`) — no separate human-readable message.

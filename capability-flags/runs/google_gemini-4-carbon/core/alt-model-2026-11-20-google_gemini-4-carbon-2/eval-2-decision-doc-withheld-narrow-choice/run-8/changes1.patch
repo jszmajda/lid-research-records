@@ -1,0 +1,59 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..ee6d945 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..072f340 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,20 +7,36 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long sequential screenings introduce many one-use sheets, while comparison sessions repeatedly revisit a smaller working set. Cache replacement must protect active comparison sheets from one-pass screening scans without pinning clips permanently as editors move between projects.
+ 
+ ## Architecture
+ 
+ Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. This contract is fixed regardless of cache eviction policy.
+ 
+-Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect policy counters, or depend on entries remaining warm.
++Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect replacement state, or depend on entries remaining warm.
+ 
+ ## Rendering and Deduplication
+ 
+-Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry.
++Resolve the immutable source revision before enqueuing a render job, returning 404 immediately for unknown revisions. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry.
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB, managed with a private 2Q eviction policy that separates first-use sheets from reused sheets across a configurable size split:
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++- **Probationary queue (FIFO)**: Newly rendered sheets enter the probationary queue on admission. Sequential screening scans cycle one-use sheets through this queue without displacing reused sheets.
++- **Protected queue (LRU)**: Sheets requested again after initial admission promote to the protected queue, where cache hits refresh recency so active comparison sets stay warm and stale sets age out when editors switch projects.
++
++Before admitting a completed sheet, the worker evicts enough cached sheets to keep total cached JPEG bytes within 12 GiB and within the configured queue targets. Temporary render output is stored outside the 12 GiB cache budget and removed on completion or failure. Eviction deletes only cached JPEG files and private queue metadata; it never deletes source footage or alters pending job-ticket behavior.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Private cache eviction policy | 2Q (probationary first-use FIFO + protected reused LRU) | Single-queue LRU; frequency-based eviction with aging | Sequential screenings can flush an entire single-queue LRU cache, while aged frequency counters add ongoing maintenance and can retain stale favorites after a project switch. 2Q isolates one-pass screening traffic in the probationary queue and ages out inactive comparison sheets via LRU, while keeping all replacement bookkeeping private to the preview worker. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Queue size split: initial byte-budget partition of the 12 GiB cap between the probationary and protected queues, and whether an under-filled queue shares unused capacity before eviction begins.
++2. Ghost eviction history: whether promotion relies solely on hits while resident in the probationary queue (simplified two-queue 2Q) or includes a bounded key-only ghost FIFO (`A1out`) so sheets revisited after probationary eviction promote to the protected queue on re-render.

@@ -1,0 +1,5 @@
+I'd recommend sticking with the `Decisions & Alternatives` row in `previews-design.md` rather than writing a full decision doc.
+
+The bar for a decision doc is forward-looking from the landed design, not how long the debate ran: a long argument can still land as a table row. Here, the eviction policy is completely private to the preview worker — the HTTP contract, render queue, 12 GiB cap, and `review-api` are all unaffected, so no other node is sized around 2Q and changing it later stays local to `previews`. The table row already tells a cold reader what alternatives were weighed (LRU, frequency-based with aging) and why 2Q won (protecting comparison sheets during long screenings at the cost of queue bookkeeping and tuning).
+
+That said, it's your call — if you think a future maintainer will still try to re-litigate 2Q against LRU or aged frequency counts without the full criteria and per-option breakdown, I can write `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from the Decisions row. Do you want to keep just the table row or add the decision doc, and how would you like to proceed with the Phase 2 review?

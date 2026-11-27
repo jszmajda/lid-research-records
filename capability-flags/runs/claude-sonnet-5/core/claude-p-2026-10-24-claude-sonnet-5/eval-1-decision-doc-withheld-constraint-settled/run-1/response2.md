@@ -1,0 +1,5 @@
+A table row is the right call here, not a decision doc. The skill's test is whether a cold reader of the *landed* choice would find it genuinely re-litigable — credible options traded against multiple criteria, with other nodes sized around the outcome. Here, once you apply the HLD's existing no-runtime-network tenet, two of the three candidates are disqualified outright; the SQLite index isn't really being weighed against live competitors, it's the only one left standing. That's explicitly the "inherited constraint settles it" case the skill says not to offer a doc for, even though the back-and-forth felt real at the time.
+
+The table row already captures the why (tenet-driven elimination of the other two, unchanged lookup interface either way), so a future reader can see it wasn't arbitrary without needing a standalone artifact.
+
+Want me to proceed with the probe triage and Phase 3 (EARS), or do you want to work through the 10 gaps first?

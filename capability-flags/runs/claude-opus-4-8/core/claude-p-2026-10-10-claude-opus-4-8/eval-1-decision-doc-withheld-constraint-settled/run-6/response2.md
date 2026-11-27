@@ -1,0 +1,7 @@
+Overkill, in my view — a row is the right home.
+
+The test for a decision doc isn't "was it hard to decide?" (you did go back and forth) — it's "would a cold reader of the *landed* design re-litigate this?" Here they wouldn't: the HLD's offline tenets eliminate both networked options outright, so a reader who sees those tenets will find local SQLite close to forced. The skill explicitly says *not* to write a doc for a choice an inherited constraint settles, however long the debate ran. A doc would re-stage three "live" options when two were never actually in contention under the current HLD — that's the kind of as-it-was-decided narration LID strips.
+
+The row already carries what a cold reader needs: why the networked options are out, and the two narrower sub-choices (build-per-kiosk, staged swap).
+
+The one thing that *would* flip me: if you expect the offline tenets themselves to be genuinely in play later — e.g., a future variant of GaugeDesk running on networked kiosks where the HTTPS directory or managed service comes back as a real contender. Then the three-way trade-off stays live and a decision doc earns its place. If that's on the horizon, I'll write one; otherwise I'll leave the row.

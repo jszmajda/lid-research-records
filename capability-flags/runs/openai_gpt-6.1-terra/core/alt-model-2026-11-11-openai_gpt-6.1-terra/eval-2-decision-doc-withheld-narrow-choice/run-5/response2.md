@@ -1,0 +1,3 @@
+I’d recommend a **Decisions & Alternatives row** in the preview design. The tradeoff is worth preserving, but the choice affects only the preview cache; the API and render queue aren’t being designed around it. A row can capture why scan resistance outweighs 2Q’s bookkeeping and tuning costs, alongside the LRU and aging alternatives.
+
+If you’d still prefer a full decision doc, I can write one. Do you approve the HLD, and which form would you like for the decision?

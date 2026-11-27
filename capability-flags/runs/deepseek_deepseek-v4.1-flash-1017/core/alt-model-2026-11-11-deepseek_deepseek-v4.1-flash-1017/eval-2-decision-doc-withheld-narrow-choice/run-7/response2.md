@@ -1,0 +1,3 @@
+I'd keep it as the Decisions & Alternatives row, not a full decision doc. The choice is confined to the preview cache, and once landed a cold reader won't credibly re-litigate 2Q against LRU or aged frequency — the row names both alternatives and the reason, which is what they'd need. A full doc would mostly preserve the argument itself, which is residue the docs-carry-current-intent tenet strips. If you want one anyway, I'll write it, but my recommendation is against it.
+
+Separately, I still need your triage on the edge-case gaps and whether the first-use share starts at 3 GiB.

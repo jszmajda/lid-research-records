@@ -1,0 +1,7 @@
+The eviction-policy choice clears the “non-obvious to a cold reader” test — LRU is lower bookkeeping, frequency-with-aging retains popular clips longer, and 2Q adds two queues and a size split that has to be tuned. A future reader would reasonably ask why the extra bookkeeping was accepted and whether the pilot measurements justify it.
+
+You already have the decision recorded in the LLD’s Decisions & Alternatives table, which is the normal home for a node-local choice. A full decision doc earns its place only when the choice stays genuinely live — i.e., credible options were traded against more than one criterion *and* other design nodes will be sized around the result. Here the impact is contained to the preview worker; the external interface, queue concurrency and disk budget are unchanged by the skill’s own tenets.
+
+Given the three meetings and the 180-message thread, I can draft a decision doc at `docs/intent/previews/decisions/preview-cache-eviction-2q.md` with context, criteria, options, and selection, and link it from the Decisions row. That would give the debate a permanent, re-litigable record.
+
+Do you want me to create the decision doc now, or is the Decisions & Alternatives row sufficient for this node-local choice?

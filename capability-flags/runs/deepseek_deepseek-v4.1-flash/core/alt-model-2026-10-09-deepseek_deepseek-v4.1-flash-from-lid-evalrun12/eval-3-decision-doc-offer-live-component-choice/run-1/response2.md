@@ -1,0 +1,9 @@
+Wrote `docs/intent/record-store/decisions/concurrent-visit-edits.md` and linked it from the concurrency-policy row of the record-store Decisions & Alternatives table.
+
+The doc follows the decision-doc structure: Context, Decision Elements (gates + weighted criteria, with the scientific-integrity and review-throughput majors tied to the HLD's non-goal and tenets), the two options each argued at its strongest (whole-visit revisions; field-aware three-way merge with its per-field rules), and a Selection. The Selection records the split and why it's resolved toward integrity, why **field-aware merge stays a live alternative** (it wins if disjoint concurrent edits dominate and the queue outruns two coordinators; and the migration is asymmetric — whole-visit → field-aware can be added server-side without changing the tablet envelope), and exactly what it **obligates downstream**: tablet-sync retains base revision IDs, sends complete payloads, shows competing revisions, sizes storage for full payloads; review-export provides the comparison screen, holds unresolved visits out of the CSV, and feeds resolutions back.
+
+Still open at the Phase 2 stop — I need these before Phase 3:
+1. Confirm the three rulings from my last message: (a) a submission based on the frozen anchor while already unresolved still becomes competing; (b) resolution may compose a new revision, not only select; (c) superseded revisions/resolutions retained indefinitely for the first release.
+2. Triage the 13 probe gaps: which to fix in the LLD now vs. defer as open questions.
+
+Once you answer those, I'll proceed to Phase 3 (EARS specs for the competing-revision, frozen-anchor, and resolution behaviors).

@@ -1,0 +1,15 @@
+**F1 (high) and F6 (medium) — In-memory queue durability, tenet conflict and missing decision row.**
+
+The job-queue LLD's Architecture section describes the queue as held entirely in process memory and states plainly that "jobs that were accepted but not yet dispatched before a restart are gone, and members resubmit them." The same section explains *why* this happens: the mini-PC "takes unattended OS updates and the occasional power blip." That pairing is the problem. The LLD itself is telling you this will happen — overnight, while members are asleep — and in those conditions the behavior directly defeats the HLD's first tenet: *"A submitted job is a promise: members should be able to upload and walk away."* A member who uploads before bed, has their job evaporated by a 2 AM system update, and arrives at the workshop to find nothing queued experienced exactly the opposite of the promise. Under *tenet cascade — designs that work against a tenet under the conditions the docs describe* — this is the pattern LID is designed to catch before code is written: the cost is low to fix at design time and high to repair after members start relying on the upload-and-walk promise.
+
+The reason the conflict is a two-part finding is that there's also no Decisions row capturing this choice. The durability trade-off *might* be deliberate — maybe the intent is to keep the queue dead-simple, and the acceptable cost is occasional resubmit — but right now a cold reader can't tell. Under *decision capture — a choice a cold reader would question or try to reverse, surviving only in prose* — a row that names what was rejected and what cost was accepted is what makes the intent legible to the next session.
+
+**What to do** — you have three choices, and the coach doesn't pick one:
+
+1. **Change the design.** Persist accepted-but-undispatched jobs to the SQLite file the registry already uses (or a separate sidecar). This closes the tenet conflict and the decision row would record *why* you chose persistence over pure memory.
+
+2. **Record the exception.** Keep in-memory, but add a Decisions row that names the tenet traded against and why that trade is acceptable — e.g., "in-memory queue: simplicity and the mini-PC's small disk budget over per-job durability; accepted cost: jobs lost on restart require resubmission; this trades against the 'job is a promise' tenet, mitigated by the overnight-dispatch window making restarts relatively rare." That row also closes F6 (the missing decision capture), so one row does double duty.
+
+3. **Revise the tenet.** If the intent was always "best-effort upload" rather than a hard promise, tighten tenet 1 so it doesn't overstate the guarantee — and add the Decisions row explaining the scoped durability posture.
+
+Option 2 is the lightest lift if the in-memory choice is intentional and you're comfortable with the occasional resubmit. Option 1 is worth considering if the "walk away" promise is load-bearing for member trust. Either way, the Decisions row is the minimum — right now that design choice is invisible to any future session.

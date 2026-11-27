@@ -1,0 +1,3 @@
+Overkill. The HLD's no-runtime-network tenet eliminates both alternatives, and the choice affects only the registry node; the Decisions row already gives a cold reader the reason the other options lost. A full doc would re-litigate a constraint that settles the choice.
+
+Keep the row. A decision doc would only earn its place if that tenet were relaxed later, which would make it a new decision rather than a record of this one.

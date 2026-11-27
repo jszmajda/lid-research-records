@@ -1,0 +1,133 @@
+I have updated `docs/intent/registry/registry-design.md` to specify the local embedded SQLite index and updated `docs/high-level-design.md` for coherence.
+
+Here is the updated Low-Level Design:
+
+```markdown
+---
+parent: high-level-design
+prefix: REG
+---
+
+# Registry Design
+
+## Context
+
+Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. Kiosks operate offline without background daemons or external network access.
+
+## Architecture
+
+Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+
+Snapshot validation, index preparation, and lookup all execute locally using an embedded SQLite database (`registry.db`). Lookups execute read-only queries against an indexed SQLite table.
+
+```
++-------------------------------------------------------------+
+|                      Registry Module                        |
+|                                                             |
+|  USB Snapshot (.ndjson + manifest)                          |
+|         │                                                   |
+|         ▼                                                   |
+|  [Import & Verify] ──(build)──► staging.db ──(atomic swap)  |
+|                                                    │        |
+|                                                    ▼        |
+|                                              active registry.db
+|                                                    │        |
+|  findBySerial(serial) ─────────(SELECT)────────────┘        |
+|         │                                                   |
+|         ▼                                                   |
+|  Found / NotFound ──► Certificates Module                   |
++-------------------------------------------------------------+
+```
+
+## Storage & Schema
+
+The active registry database resides in a designated local directory as `registry.db`.
+
+### Tables
+
+1. `metadata`: Single-row table storing snapshot header information.
+   - `snapshot_date` (TEXT, ISO-8601 string): Date stamp of the active snapshot.
+   - `schema_version` (INTEGER): Schema version of the snapshot.
+
+2. `equipment`: Stores calibration records for each serialized tool.
+   - `normalized_serial` (TEXT PRIMARY KEY): Serial number with leading/trailing whitespace trimmed and ASCII letters converted to uppercase.
+   - `raw_serial` (TEXT NOT NULL): Original serial number string as supplied in the snapshot.
+   - `description` (TEXT NOT NULL): Equipment description and model name.
+   - `calibration_date` (TEXT NOT NULL): Date of last calibration (ISO-8601).
+   - `due_date` (TEXT NOT NULL): Date calibration is next due (ISO-8601).
+
+Primary key indexing on `normalized_serial` ensures point lookups complete well under 250 ms across 90,000 records on low-resource kiosk hardware.
+
+## Snapshot Import & Index Building
+
+When a new snapshot file is imported from USB media:
+
+1. **Manifest & Signature Verification**: Verify the snapshot manifest and cryptographic signature against the bundled public key before reading or processing records.
+2. **Schema Compatibility**: Inspect `schema_version`. If unsupported by the current kiosk software version, reject the import immediately.
+3. **Staging Index Construction**:
+   - Initialize a temporary SQLite database file (`registry.db.tmp`).
+   - Configure SQLite pragmas for bulk load performance (e.g., `PRAGMA synchronous = OFF`, `PRAGMA journal_mode = MEMORY`).
+   - Create tables and streaming-insert records from the NDJSON file within a transaction.
+   - During ingestion, check for duplicate normalized serial numbers. If duplicates are found, abort ingestion, roll back, and report a validation error.
+   - Write snapshot metadata (`snapshot_date`, `schema_version`) to the `metadata` table.
+   - Re-enable standard durable pragmas and close the staging connection.
+4. **Atomic Activation**:
+   - Atomically rename `registry.db.tmp` to `registry.db` (replacing any existing file).
+   - Reopen the read-only connection to `registry.db`.
+5. **Failure Handling**:
+   - If signature verification, schema checking, record parsing, or duplicate validation fails at any point, the temporary staging file is deleted.
+   - The active `registry.db` remains untouched and continues serving lookups from the previously active snapshot.
+
+## Lookup Behavior
+
+When `findBySerial(serial)` is invoked:
+
+1. **Input Normalization**:
+   - Strip leading and trailing whitespace.
+   - Convert ASCII lowercase characters (`a-z`) to uppercase (`A-Z`).
+   - Punctuation (hyphens, dots, slashes) remains intact and significant.
+2. **Database Query**:
+   - Query the `metadata` table to obtain the active `snapshotDate`.
+   - Query `equipment` WHERE `normalized_serial = ?`.
+3. **Result Formation**:
+   - If a matching row is found: return `Found(record, snapshotDate)` where `record` contains `raw_serial`, `description`, `calibration_date`, and `due_date`.
+   - If no matching row is found: return `NotFound(snapshotDate)`.
+   - If no snapshot has ever been imported (no active database): return `NotFound(None)` or error state as defined by kiosk initialization.
+
+## Decisions & Alternatives
+
+| Decision | Chosen | Alternatives Considered | Rationale |
+|---|---|---|---|
+| Lookup backend | Local embedded SQLite index | On-site HTTPS directory, managed search service | Adheres to kiosk offline tenet (no runtime network access allowed). Provides predictable sub-millisecond point lookups on 4 GB RAM hardware without running a persistent daemon process. Self-contained within the registry component without changing the certificate interface. |
+| Snapshot index preparation | Build SQLite index locally in temporary staging file on snapshot import | Pre-built SQLite database on USB, in-memory NDJSON scan | Pre-building SQLite on USB would require kiosks to trust external database binaries or complicate central snapshot signing; in-memory scan exceeds kiosk memory limits and fails 250 ms latency goal. Staging file with atomic rename prevents exposing partial imports. |
+
+## Open Questions & Future Decisions
+
+### Resolved
+1. ✅ **Backend Selection**: Local embedded SQLite index selected over networked alternatives to respect kiosk air-gap isolation and 250 ms latency budget.
+2. ✅ **Isolation during Rebuild**: Staging database with atomic filesystem rename ensures existing lookups are never disrupted during snapshot ingestion.
+
+### Deferred
+1. **Initial Startup State**: Specific behavior and user notification when a kiosk boots before any snapshot has ever been imported.
+2. **Vacuum & Space Reclamation**: Retention or automatic cleanup of stale `.tmp` files if a kiosk loses power mid-import.
+
+## References
+
+- `docs/high-level-design.md`
+- `docs/intent/certificates/certificates-design.md`
+```
+
+---
+
+### LLD Edge-Case Probe Findings
+
+An edge-case probe targeting the registry component's internal lifecycle and mechanics surfaced the following questions:
+
+1. **Uninitialized State Contract**: What should `findBySerial` return on a fresh kiosk before any snapshot has been imported (`NotFound(None)`, a dedicated error, or a `NotInitialized` status)?
+2. **Stale Reader Handles & Concurrency**: When `registry.db.tmp` is atomically renamed over `registry.db`, what handles open reader connections (e.g. read locks, inode reuse, or re-opening connection handles per query)?
+3. **Snapshot Downgrades & Re-imports**: What happens if an operator imports an older snapshot date than currently active, or re-imports the identical snapshot?
+4. **Pre-activation Integrity Checks**: Should the import pipeline run `PRAGMA integrity_check` / `quick_check` on `registry.db.tmp` before renaming?
+5. **Disk Space Exhaustion**: How should staging behave if disk space is insufficient to hold both the existing database and the staging build simultaneously?
+6. **Import Error Shapes**: Should the import interface define a structured error enum distinguishing signature mismatch, schema incompatibility, duplicate serials, and I/O failures?
+
+Please indicate which of these gaps you would like incorporated into the LLD vs. left deferred as open questions, or if this LLD is approved to proceed to Phase 3 (EARS specs).

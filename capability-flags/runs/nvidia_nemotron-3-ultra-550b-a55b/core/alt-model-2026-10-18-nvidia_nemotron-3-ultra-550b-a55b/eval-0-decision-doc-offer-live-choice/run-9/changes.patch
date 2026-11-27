@@ -1,0 +1,658 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 34ebfe7..384353a 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -6,16 +6,16 @@ Forty weekend markets currently relay stall closures, late arrivals, and power p
+ 
+ ## Approach
+ 
+-Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. The approach for delivering committed changes is still open: five-second HTTPS polling, self-hosted WebSockets, or a hosted realtime service. All three can meet the required freshness target. Subsecond updates would be useful, but are not required.
++Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. Committed changes are delivered via **self-hosted WebSockets** — fast updates without a realtime vendor bill, accepting connection capacity and reconnect operations work. The change store provides replayable revisions and reliable publication; delivery manages WebSocket sessions; browsers implement reconnect and catch-up logic.
+ 
+-Delivery, change storage, and browser recovery must be designed together after this choice. Polling would favor cursor queries; self-hosted sockets would need connection management and replay; hosted delivery would need publication reconciliation and provider credentials. Neither operating cost nor minimum operational burden has been declared the overriding criterion.
++Subsecond updates are useful but not required; the 15-second freshness target is the binding requirement.
+ 
+ ## Architecture
+ 
+ - Access: `docs/intent/access/access-design.md`, with `docs/intent/access/access-specs.md`. Written below the stable HTTPS command boundary.
+-- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Revision history, read indexes, and any publication outbox depend on the delivery approach.
+-- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Owns polling responses, socket sessions, or hosted publication, depending on the approach.
+-- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Its subscription, reconnect, and catch-up behavior depend on the approach.
++- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Provides replayable revisions and a reliable publication outbox for WebSocket delivery.
++- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Manages WebSocket sessions, publication, and reconnect/catch-up.
++- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Implements WebSocket subscription, reconnect, and revision catch-up.
+ 
+ ## Tenets
+ 
+@@ -41,3 +41,32 @@ Delivery, change storage, and browser recovery must be designed together after t
+ ## Key Design Decisions
+ 
+ - **Commands over HTTPS, one authoritative board per event.** Editors submit commands to the server, which assigns each committed edit one event revision. Peer-to-peer or browser-side merging was rejected: the tenets require one authoritative revision regardless of delivery route, and offline editing is a non-goal.
++
++- **Self-hosted WebSockets for change delivery.** Chosen over five-second HTTPS polling and hosted realtime service.
++
++  **Options considered:**
++  1. **Five-second HTTPS polling** — simplest stateless operation; browsers run a polling loop, store needs cursor queries, delivery stays request/response. Cost: ~5s median latency, more repeated reads, no connection state to manage.
++  2. **Self-hosted WebSockets** — persistent connections, subsecond push, no vendor bill. Cost: we own connection capacity (800 concurrent per event), reconnect logic on both sides, session lifecycle, backpressure, heartbeat monitoring.
++  3. **Hosted realtime service (Pusher, Ably, etc.)** — fastest to low-latency updates, least connection ops. Cost: recurring per-connection/message fees, provider coupling, credential management, publication reconciliation.
++
++  **Why self-hosted WebSockets:**
++  - The 15-second freshness target is the binding requirement; all three meet it. Subsecond is useful but not required.
++  - No recurring vendor fees — pilot budget favors fixed infrastructure cost over per-connection metering.
++  - No provider coupling — we control the protocol, scaling knobs, and data path. Event updates contain only stall IDs and operational statuses (no PII), so compliance doesn't push us to a vendor.
++  - Team has WebSocket operations capacity; the reconnect/catch-up logic is well-understood.
++
++  **What we're accepting (the tradeoff):**
++  - Connection management: 800 simultaneous browsers per event, opening-time bursts. Delivery node must handle handshake semaphores, send buffers, heartbeats, graceful drain.
++  - Reconnect complexity: browsers implement exponential backoff + cursor-based catch-up; delivery serves CATCH_UP replays or full snapshots on large gaps. Both sides must handle network partitions, sleep/wake, tab visibility.
++  - Operational burden: monitoring connection counts, lag metrics, outbox backlog; capacity planning for peak events.
++
++  **What we gain:**
++  - Fast updates without a realtime vendor bill.
++  - Full control over protocol evolution (frame types, compression, auth refresh).
++  - No provider SLA dependency during market hours.
++  - Simpler mental model than polling — push matches the "live board" UX.
++
++  **Downstream implications (cascade to LLDs):**
++  - Change store: must provide replayable revisions (full snapshots per revision) and a transactional publication outbox.
++  - Delivery: owns WebSocket session lifecycle, publication pipeline, heartbeat, backpressure, capacity limits.
++  - Browser sync: implements reconnect with exponential backoff, cursor persistence in sessionStorage, visible sync state (tenet: connectivity failures must be visible).
+diff --git a/docs/intent/browser-sync/browser-sync-design.md b/docs/intent/browser-sync/browser-sync-design.md
+new file mode 100644
+index 0000000..05f06d2
+--- /dev/null
++++ b/docs/intent/browser-sync/browser-sync-design.md
+@@ -0,0 +1,223 @@
++---
++parent: high-level-design
++prefix: BROWSER
++---
++
++# Browser Sync Design
++
++## Context and Design Philosophy
++
++The browser sync component runs in each staff browser and maintains a live, revisioned view of the event board. It establishes a WebSocket connection to the delivery layer, handles reconnect with automatic catch-up, and presents a consistent board state to the UI. The design prioritizes visibility of connectivity state — browsers must never mistake a disconnected board for an unchanged one.
++
++## Connection Lifecycle
++
++### States
++
++| State | Description | UI Indicator |
++|-------|-------------|--------------|
++| `CONNECTING` | WebSocket handshake in progress | Spinner + "Connecting…" |
++| `SYNCED` | Connected, cursor = currentRevision | Green dot + "Live" |
++| `CATCHING_UP` | Replaying missed revisions after reconnect | Yellow dot + "Catching up (N revisions)…" |
++| `STALE` | Connected but cursor lags >5 revisions | Yellow dot + "Sync delayed" |
++| `DISCONNECTED` | No WebSocket connection; retry scheduled | Red dot + "Offline — retry in Ns" |
++| `ERROR` | Fatal error (auth, event ended) | Red banner + error message |
++
++### Transitions
++
++```
++CONNECTING → SYNCED (on WELCOME with cursor = currentRevision + 1)
++CONNECTING → CATCHING_UP (on WELCOME with boardSnapshot + cursor <= currentRevision)
++CONNECTING → ERROR (on ERROR frame or handshake failure)
++SYNCED → CATCHING_UP (on RESYNC response or proactive CATCH_UP)
++SYNCED → STALE (cursor lags >5 for >10s)
++SYNCED → DISCONNECTED (on close, timeout, or network error)
++CATCHING_UP → SYNCED (cursor catches up to currentRevision)
++CATCHING_UP → DISCONNECTED (on close/timeout during catch-up)
++DISCONNECTED → CONNECTING (after backoff, or on manual retry)
++DISCONNECTED → ERROR (on fatal error during reconnect)
++ERROR → (terminal; requires page reload or event change)
++```
++
++## WebSocket Client
++
++### Connection Parameters
++
++- URL: `wss://{host}/events/{eventId}/sync?cursor={cursor}`
++- `cursor` persisted in `sessionStorage` per event tab; survives tab reload
++- On first visit or explicit "fresh load", cursor omitted → full snapshot
++
++### Message Handler
++
++```
++on WELCOME:
++  - store sessionId
++  - if boardSnapshot present: applySnapshot(boardSnapshot)
++  - set cursor = welcome.cursor
++  - transition to SYNCED or CATCHING_UP
++
++on REVISION:
++  - if revision < cursor: ignore (duplicate)
++  - if revision == cursor: applyRevision(revision), cursor++
++  - if revision > cursor: gap detected → send RESYNC(cursor)
++
++on CATCH_UP:
++  - for each rev in revisions (in order):
++      if rev.revision >= cursor: applyRevision(rev), cursor = rev.revision + 1
++  - transition to SYNCED
++
++on HEARTBEAT:
++  - send PING { clientTime: now() }
++  - update lastHeartbeatAt
++
++on ERROR:
++  - if retryable: transition to DISCONNECTED
++  - else: transition to ERROR
++
++on GOODBYE:
++  - transition to DISCONNECTED
++```
++
++### Heartbeat & Timeout
++
++- Server sends HEARTBEAT every 15s
++- Client must send PING within 5s of HEARTBEAT receipt
++- If no HEARTBEAT received for 25s (15s interval + 5s grace + 5s margin), assume connection dead → transition to DISCONNECTED
++- Client sends PING proactively every 10s as additional liveness signal
++
++## Reconnect Strategy
++
++### Backoff Schedule
++
++| Attempt | Delay | Jitter |
++|---------|-------|--------|
++| 1 | 1 s | ±200 ms |
++| 2 | 2 s | ±400 ms |
++| 3 | 4 s | ±800 ms |
++| 4 | 8 s | ±1.6 s |
++| 5+ | 15 s | ±3 s |
++
++Max 5 rapid retries, then 15s steady interval. Cap at 20 minutes (goal: recover after 20 min disconnect).
++
++### Reconnect Procedure
++
++1. Enter `DISCONNECTED` state, schedule retry per backoff
++2. On retry: read persisted `cursor` from `sessionStorage`
++3. Open WebSocket with `?cursor={cursor}`
++4. On WELCOME:
++   - If `boardSnapshot` present: full reset → applySnapshot, set cursor
++   - Else if `cursor` matches server's `cursor`: seamless resume
++   - Else: gap → will receive CATCH_UP or REVISION gap triggers RESYNC
++5. Persist new `cursor` on each successful revision apply
++
++### Cursor Persistence
++
++- Key: `marketboard:cursor:{eventId}`
++- Value: `{ revision: number, timestamp: ISO8601 }`
++- Updated on every successful revision apply
++- Cleared on explicit "clear board" or event change
++
++## Board State Management
++
++### State Representation
++
++```typescript
++interface BoardState {
++  stalls: Map<StallId, StallStatus>;
++  revision: number;
++  lastUpdate: Date;
++}
++
++type StallStatus = 
++  | { state: 'OPEN' }
++  | { state: 'CLOSED'; reason: string; at: Date }
++  | { state: 'POWER_ISSUE'; detail: string; at: Date }
++  | { state: 'LATE'; expectedAt: Date }
++  | { state: 'UNKNOWN' };
++```
++
++### Applying Revisions
++
++- `applySnapshot(snapshot)`: Replaces entire `stalls` map, sets `revision = snapshot.revision`
++- `applyRevision(rev)`: Mutates single stall per `rev.command`, increments `revision`
++- Both are synchronous, pure functions — easy to test and reason about
++
++### UI Subscription
++
++React components (or equivalent) subscribe via a selector hook:
++
++```typescript
++function useStallStatus(eventId: string, stallId: string): StallStatus | null
++function useBoardSnapshot(eventId: string): BoardState | null
++function useSyncState(eventId: string): SyncState
++```
++
++Selectors compute derived state from the normalized `BoardState` — no redundant stores.
++
++## Offline & Tab Lifecycle
++
++### Page Visibility
++
++- Tab hidden: continue WebSocket (browser throttles timers but WS stays alive)
++- Tab visible after hidden: send `PING` immediately to verify liveness
++- If `lastHeartbeatAt > 30s ago`: force reconnect
++
++### Browser Sleep/Wake
++
++- On wake: `visibilitychange` fires → same as tab visible logic
++- If disconnect > 20 min: cursor may be stale beyond retention → WELCOME returns full snapshot
++
++### Service Worker (Non-Goal)
++
++- Offline editing is a non-goal
++- No service worker for pilot; plain WebSocket + sessionStorage suffices
++
++## Error Handling
++
++### Recoverable Errors
++
++| Code | Cause | Action |
++|------|-------|--------|
++| `CAPACITY` | Server at session limit | Backoff retry |
++| `STALE_CURSOR` | Cursor too old, full snapshot sent | Apply snapshot, continue |
++| `HEARTBEAT_TIMEOUT` | No HEARTBEAT for 25s | Reconnect |
++
++### Fatal Errors
++
++| Code | Cause | Action |
++|------|-------|--------|
++| `UNAUTHORIZED` | Session expired or role revoked | Redirect to sign-in |
++| `EVENT_ENDED` | Event no longer published | Show "Event ended" banner |
++| `PROTOCOL_ERROR` | Frame parse failure | Reload page |
++
++### Visibility Rule
++
++Per tenet: *Connectivity failures must be visible, not mistaken for an unchanged board.* The `SyncState` is always reflected in the UI — at minimum a colored indicator dot in the header, with tooltip detail on hover.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cursor persistence | `sessionStorage` per tab | `localStorage`; IndexedDB; in-memory only | `sessionStorage` survives reload, isolates tabs (multi-tab editing), clears on browser close — matches coordinator workflow |
++| Reconnect backoff | Exponential with jitter, cap at 15s | Fixed interval; linear backoff; no cap | Exponential avoids thundering herd; cap bounds worst-case recovery; jitter desynchronizes mass reconnect |
++| Gap detection | Client sends RESYNC on revision gap | Server pushes CATCH_UP proactively always; client polls REST | Client-driven RESYNC is simple, puts control in browser, works with any server implementation |
++| State mutation | Synchronous pure functions on revision apply | Immutable Redux-style; Observable streams | Pure functions are testable, no framework lock-in, trivial to port |
++| UI sync indicator | Required per tenet | Optional; hidden in menu | Tenet mandates visibility; indicator dot is minimal, always present |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Self-hosted WebSockets — browser implements reconnect/catch-up per delivery protocol
++
++### Deferred
++1. Multi-tab coordination (shared worker for single connection across tabs) — pilot uses per-tab connection
++2. Background tab throttling mitigation (Page Visibility API + explicit wake check)
++3. Revision compression for catch-up batches >100 (delta encoding vs full snapshots)
++4. Metrics: client-side latency histogram (server timestamp → client apply)
++5. Accessibility: screen-reader announcements for sync state changes
++
++## References
++
++- High-Level Design: `docs/high-level-design.md`
++- Delivery Design: `docs/intent/delivery/delivery-design.md` (protocol definition)
++- Change Store Design: `docs/intent/change-store/change-store-design.md` (revision model)
++- Access Design: `docs/intent/access/access-design.md` (authorization context)
+\ No newline at end of file
+diff --git a/docs/intent/browser-sync/browser-sync-specs.md b/docs/intent/browser-sync/browser-sync-specs.md
+new file mode 100644
+index 0000000..79e3ec0
+--- /dev/null
++++ b/docs/intent/browser-sync/browser-sync-specs.md
+@@ -0,0 +1,19 @@
++**LLD**: docs/intent/browser-sync/browser-sync-design.md
++
++# Browser Sync Specifications
++
++- [ ] **BROWSER-001**: When the browser loads an event board, the system shall open a WebSocket connection to the delivery endpoint with the persisted cursor from sessionStorage (if any).
++- [ ] **BROWSER-002**: When a WELCOME frame with boardSnapshot is received, the system shall apply the snapshot as the current board state and set cursor to welcome.cursor.
++- [ ] **BROWSER-003**: When a REVISION frame is received with revision == cursor, the system shall apply the revision to the board state and increment cursor.
++- [ ] **BROWSER-004**: When a REVISION frame is received with revision > cursor, the system shall send a RESYNC frame with the current cursor to request catch-up.
++- [ ] **BROWSER-005**: When a CATCH_UP frame is received, the system shall apply each revision in order where revision >= cursor, updating cursor to the last applied revision + 1.
++- [ ] **BROWSER-006**: The system shall send a PING response within 5 seconds of receiving a HEARTBEAT frame.
++- [ ] **BROWSER-007**: If no HEARTBEAT is received for 25 seconds, the system shall treat the connection as dead and initiate reconnect.
++- [ ] **BROWSER-008**: When the WebSocket closes or times out, the system shall transition to DISCONNECTED state and schedule a reconnect with exponential backoff (1s, 2s, 4s, 8s, 15s capped, ±20% jitter).
++- [ ] **BROWSER-009**: On reconnect, the system shall open a new WebSocket with the persisted cursor from sessionStorage.
++- [ ] **BROWSER-010**: The system shall persist the cursor to sessionStorage on every successful revision apply.
++- [ ] **BROWSER-011**: The system shall expose a sync state (CONNECTING, SYNCED, CATCHING_UP, STALE, DISCONNECTED, ERROR) that is always reflected in the UI.
++- [ ] **BROWSER-012**: If the server returns ERROR { retryable: false } or GOODBYE with a fatal reason, the system shall transition to ERROR state and not attempt reconnect.
++- [ ] **BROWSER-013**: When the tab becomes visible after being hidden, if the last HEARTBEAT was received more than 30 seconds ago, the system shall force a reconnect.
++- [ ] **BROWSER-014**: The system shall apply revisions and snapshots via pure synchronous functions that take the previous board state and return the new board state.
++- [ ] **BROWSER-015**: The system shall recover the latest board after a disconnect of up to 20 minutes by reconnecting and replaying missed revisions (or receiving a full snapshot if cursor is beyond retention).
+\ No newline at end of file
+diff --git a/docs/intent/change-store/change-store-design.md b/docs/intent/change-store/change-store-design.md
+new file mode 100644
+index 0000000..faa0f0c
+--- /dev/null
++++ b/docs/intent/change-store/change-store-design.md
+@@ -0,0 +1,104 @@
++---
++parent: high-level-design
++prefix: CHANGE
++---
++
++# Change Store Design
++
++## Context and Design Philosophy
++
++The change store is the authoritative source of truth for event board revisions. It accepts committed edits from the access layer, assigns each a monotonically increasing event revision number, and provides the replayable revision history and publication outbox that the self-hosted WebSocket delivery layer depends on. The design favors append-only storage with efficient cursor-based reads for both full-board snapshots and incremental catch-up.
++
++## Revision Model
++
++Each event has an independent revision sequence starting at 1. A revision captures:
++
++- **Revision number**: Monotonically increasing integer per event
++- **Timestamp**: Server-side commit timestamp (UTC)
++- **Actor ID**: The authorized editor from the access layer
++- **Command**: The original edit command (stall ID, new status, optional note)
++- **Resulting board state**: Full snapshot of all stall statuses after the edit applies
++
++Revisions are immutable once committed. The current board state is always derivable by applying revisions in order from the initial empty board.
++
++## Storage Schema
++
++### Revisions Table
++
++| Column | Type | Constraints |
++|--------|------|-------------|
++| event_id | UUID | PK, FK to events |
++| revision | BIGINT | PK, auto-increment per event_id |
++| committed_at | TIMESTAMPTZ | NOT NULL, default now() |
++| actor_id | UUID | NOT NULL, FK to coordinators |
++| command_json | JSONB | NOT NULL |
++| board_snapshot_json | JSONB | NOT NULL |
++
++Primary key: (event_id, revision). Index on (event_id, committed_at) for time-range queries.
++
++### Publication Outbox Table
++
++| Column | Type | Constraints |
++|--------|------|-------------|
++| id | BIGSERIAL | PK |
++| event_id | UUID | NOT NULL |
++| revision | BIGINT | NOT NULL |
++| payload_json | JSONB | NOT NULL |
++| created_at | TIMESTAMPTZ | NOT NULL, default now() |
++| published_at | TIMESTAMPTZ | NULLABLE |
++
++Unique index on (event_id, revision). The outbox is written transactionally with the revision commit. Delivery reads from the outbox in (event_id, revision) order and marks rows published_at when acknowledged by all active sessions for that event.
++
++## Read Indexes
++
++Two read paths are optimized:
++
++1. **Full snapshot**: Latest revision's board_snapshot_json — O(1) via `ORDER BY revision DESC LIMIT 1`
++2. **Incremental catch-up**: Revisions since a client's known cursor — range scan on (event_id, revision) where revision > cursor
++
++No secondary materialized views are needed; the revision table serves both.
++
++## Retention
++
++- **Hot**: Last 7 days of revisions (per goal) — kept in primary storage
++- **Cold**: Beyond 7 days — eligible for archive to object storage; not required for pilot
++
++Archive is a background job; it does not block the revision commit path.
++
++## Concurrency
++
++- Single-writer per event: the command handler serializes edits for a given event_id
++- Readers never block writers; MVCC provides consistent snapshots
++- Revision assignment uses `SELECT MAX(revision) + 1 FOR UPDATE` on the event's revision row, or a per-event sequence
++
++## Failure Modes
++
++- **Commit failure**: Command handler returns error to editor; no revision created
++- **Outbox write failure**: Transaction rolls back; command handler retries
++- **Delivery lag**: Outbox accumulates unread rows; delivery catches up when capacity allows
++- **Storage full**: Monitoring alerts at 70% capacity; archive job accelerates
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Revision storage | Append-only table with full board snapshot per revision | Event sourcing with projection rebuild; delta-only storage | Full snapshots make catch-up O(1) per revision; 7 days × 20 edits/sec × ~2KB = ~24GB worst case, well within pilot scope |
++| Outbox pattern | Transactional outbox in same DB | Separate message broker (Kafka, NATS) | Avoids extra infrastructure; DB transaction atomicity guarantees no lost publications |
++| Cursor granularity | Per-event revision number | Global logical timestamp; per-stall version vectors | Revision number is total order per event, matches delivery's replay contract, simple for clients |
++| Retention enforcement | Background archive job | TTL-based auto-delete; partitioning | Archive preserves investigatability; TTL risks premature loss during incidents |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Self-hosted WebSockets chosen — change store provides replayable revisions and outbox
++
++### Deferred
++1. Exact archive format and cold-storage destination (object storage vs. partitioned table)
++2. Whether to add a "revision compacted" flag for snapshots that can be reconstructed from deltas
++3. Backfill strategy for events created before pilot start
++
++## References
++
++- High-Level Design: `docs/high-level-design.md`
++- Delivery Design: `docs/intent/delivery/delivery-design.md` (downstream consumer of outbox)
++- Access Design: `docs/intent/access/access-design.md` (upstream command authorization)
+\ No newline at end of file
+diff --git a/docs/intent/change-store/change-store-specs.md b/docs/intent/change-store/change-store-specs.md
+new file mode 100644
+index 0000000..95a98ff
+--- /dev/null
++++ b/docs/intent/change-store/change-store-specs.md
+@@ -0,0 +1,12 @@
++**LLD**: docs/intent/change-store/change-store-design.md
++
++# Change Store Specifications
++
++- [ ] **CHANGE-001**: When a command handler commits an edit for an event, the system shall assign the next sequential revision number for that event and persist the revision with the command, actor ID, timestamp, and full board snapshot.
++- [ ] **CHANGE-002**: When a revision is committed, the system shall write a corresponding publication outbox row in the same database transaction.
++- [ ] **CHANGE-003**: The system shall provide a full board snapshot by returning the board_snapshot_json from the latest revision for an event.
++- [ ] **CHANGE-004**: When a browser requests revisions since a cursor, the system shall return all revisions for that event where revision > cursor, ordered by revision ascending.
++- [ ] **CHANGE-005**: The system shall retain revisions for at least seven days for operational investigation.
++- [ ] **CHANGE-006**: If a commit transaction fails, the system shall return an error to the command handler and create no revision or outbox row.
++- [ ] **CHANGE-007**: The system shall support 20 edits per second burst writes for a single event without blocking readers.
++- [ ] **CHANGE-008**: While an archive job runs, the system shall not block revision commits or delivery reads.
+\ No newline at end of file
+diff --git a/docs/intent/delivery/delivery-design.md b/docs/intent/delivery/delivery-design.md
+new file mode 100644
+index 0000000..8ef1395
+--- /dev/null
++++ b/docs/intent/delivery/delivery-design.md
+@@ -0,0 +1,183 @@
++---
++parent: high-level-design
++prefix: DELIVERY
++---
++
++# Delivery Design
++
++## Context and Design Philosophy
++
++The delivery component owns the self-hosted WebSocket layer: it manages persistent connections from browsers, publishes committed revisions from the change store's outbox to subscribed sessions, and handles reconnect with revision catch-up. It is the bridge between the authoritative revision log and the browser's live view. The design accepts connection management complexity to avoid vendor fees and coupling, targeting 800 simultaneous browsers with opening-time bursts.
++
++## WebSocket Protocol
++
++### Connection Establishment
++
++1. Browser opens `wss://host/events/{eventId}/sync?cursor={revision}`  
++   - `cursor` optional; omitted = subscribe from latest
++2. Server validates:
++   - Event exists and is published
++   - Browser has viewer or editor role for this event (via access layer)
++3. Server accepts connection, assigns session ID, sends `WELCOME` frame with:
++   - `sessionId`: server-generated opaque token
++   - `currentRevision`: latest revision number
++   - `boardSnapshot`: full board state at currentRevision (if cursor omitted or stale)
++   - `cursor`: the revision the browser will receive next (currentRevision + 1)
++
++### Frame Types (Server → Browser)
++
++| Type | Payload | Description |
++|------|---------|-------------|
++| `WELCOME` | `{ sessionId, currentRevision, boardSnapshot?, cursor }` | Sent once on connect |
++| `REVISION` | `{ revision, timestamp, actorId, command, boardSnapshot }` | New committed revision |
++| `CATCH_UP` | `{ revisions: Revision[], cursor }` | Bulk replay for reconnect |
++| `HEARTBEAT` | `{ serverTime }` | Every 15s; browser must respond within 5s |
++| `ERROR` | `{ code, message, retryable }` | Fatal or transient error |
++| `GOODBYE` | `{ reason }` | Server-initiated close |
++
++### Frame Types (Browser → Server)
++
++| Type | Payload | Description |
++|------|---------|-------------|
++| `PING` | `{ clientTime }` | Response to HEARTBEAT |
++| `RESYNC` | `{ cursor }` | Request catch-up from cursor |
++| `ACK` | `{ revision }` | Acknowledges receipt of REVISION (optional, for flow control) |
++
++### Revision Payload
++
++```json
++{
++  "revision": 42,
++  "timestamp": "2026-10-18T14:23:12.456Z",
++  "actorId": "coord-uuid",
++  "command": { "stallId": "A-12", "status": "CLOSED", "note": "Power issue" },
++  "boardSnapshot": { "A-12": "CLOSED", "A-13": "OPEN", ... }
++}
++```
++
++## Session Management
++
++### Session State
++
++Each active WebSocket connection holds:
++
++- `sessionId`: Unique per connection
++- `eventId`: The event this session subscribes to
++- `cursor`: Next revision the browser expects (initially from WELCOME)
++- `ackedRevision`: Highest revision the browser has ACKed (for flow control)
++- `connectedAt`: Timestamp
++- `lastPingAt`: Timestamp of last PING received
++
++### Capacity Limits
++
++- **Max sessions per event**: 800 (matches goal)
++- **Max total sessions**: 10,000 (40 markets × 250 avg, with headroom)
++- **Per-session send buffer**: 64 KB; backpressure closes session if exceeded
++- **Heartbeat interval**: 15 seconds; timeout 5 seconds
++
++### Session Lifecycle
++
++1. **Connect** → validate → assign sessionId → send WELCOME → add to event's session set
++2. **Active** → publish REVISION frames as outbox drains → handle PING/RESYNC
++3. **Reconnect** → browser sends RESYNC with cursor → server sends CATCH_UP → resume ACTIVE
++4. **Disconnect** (clean or timeout) → remove from event's session set → release resources
++
++## Publication Pipeline
++
++### Outbox Polling
++
++A dedicated publisher goroutine (or equivalent) per event:
++
++1. Polls change store outbox for `WHERE event_id = ? AND published_at IS NULL ORDER BY revision`
++2. For each row, constructs REVISION frame from `payload_json`
++3. Fans out to all sessions for that event with `cursor <= revision`
++4. On successful send to all sessions, marks row `published_at = now()`
++5. If any session send fails (backpressure, disconnect), retries on next poll iteration
++
++### Polling Cadence
++
++- **Base interval**: 100 ms
++- **Backoff**: Exponential up to 2 s when outbox empty
++- **Burst mode**: When >10 pending rows, poll continuously until caught up
++
++### Ordering Guarantee
++
++- Revisions published in strict (event_id, revision) order per event
++- No cross-event ordering required
++- Within an event, all sessions see revisions in the same order
++
++## Reconnect & Catch-Up
++
++### Browser-Initiated Resync
++
++Browser sends `RESYNC { cursor }` on:
++- Initial connect with stale cursor
++- Reconnect after disconnect (network change, sleep/wake, tab backgrounded)
++- Missed heartbeat recovery
++
++Server responds with `CATCH_UP { revisions: [...], cursor }` where revisions are all committed revisions from `cursor` to `currentRevision`. If gap > 500 revisions, server sends full snapshot in WELCOME instead and resets cursor.
++
++### Server-Initiated Resync
++
++If a session's `ackedRevision` lags `currentRevision` by >100, server may send `CATCH_UP` proactively to prevent unbounded buffer growth.
++
++### Cursor Semantics
++
++- Cursor = next revision the browser *expects to receive*
++- On WELCOME, cursor = currentRevision + 1
++- On each REVISION received, browser increments cursor
++- On CATCH_UP, cursor = last revision in batch + 1
++
++## Failure Handling
++
++### Network Partitions
++
++- Browser misses HEARTBEAT → server closes session after 5s timeout
++- Browser detects missed HEARTBEAT → initiates reconnect with RESYNC
++- Connectivity failures are visible (GOODBYE/ERROR frames), not silent
++
++### Outbox Backlog
++
++- If delivery falls behind, outbox accumulates
++- Publisher prioritizes oldest unread rows
++- Sessions with lag >100 receive proactive CATCH_UP
++- Monitoring alerts at >10,000 pending outbox rows per event
++
++### Duplicate Delivery
++
++- Idempotent by revision number: browser ignores REVISION where revision < cursor
++- ACK is advisory; server does not wait for ACK to mark published_at
++
++### Session Storms
++
++- Opening time: many browsers connect simultaneously
++- Connection acceptor uses semaphore (max 200 concurrent handshakes)
++- Excess connections queued with 5s timeout; reject with `ERROR { code: "CAPACITY", retryable: true }`
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Protocol | Custom binary-like JSON over WebSocket | GraphQL subscriptions; Server-Sent Events; MQTT over WebSocket | Custom keeps frame overhead low (~200B/revision), no extra protocol layers, full control over reconnect semantics |
++| Outbox polling | Per-event publisher goroutine polling DB | LISTEN/NOTIFY (Postgres); CDC (Debezium); separate message broker | Polling is simple, no extra deps, works with any SQL DB; 100ms base interval meets 15s freshness easily |
++| Catch-up granularity | Full revision replay (not delta) | Delta-only; snapshot + delta | Revisions already carry full board snapshot; replay is simple and correct |
++| Flow control | Optional ACK, per-session send buffer | Credit-based; TCP backpressure only | ACK enables application-level visibility; buffer prevents OOM on slow clients |
++| Heartbeat | Server-initiated every 15s, 5s timeout | Browser-initiated; WebSocket ping/pong | Server controls timing, detects dead clients proactively, works through proxies that drop idle connections |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Self-hosted WebSockets — delivery owns session lifecycle and publication
++
++### Deferred
++1. Exact binary frame format (MessagePack vs JSON) — JSON for pilot, evaluate MessagePack if bandwidth becomes concern
++2. Horizontal scaling of delivery nodes (sticky sessions vs. shared session store)
++3. Per-session compression (permessage-deflate) — evaluate after pilot metrics
++4. Authentication token refresh during long-lived sessions (8h session expiry from access layer)
++
++## References
++
++- High-Level Design: `docs/high-level-design.md`
++- Change Store Design: `docs/intent/change-store/change-store-design.md` (upstream outbox source)
++- Browser Sync Design: `docs/intent/browser-sync/browser-sync-design.md` (downstream consumer)
++- Access Design: `docs/intent/access/access-design.md` (authorization on connect)
+\ No newline at end of file
+diff --git a/docs/intent/delivery/delivery-specs.md b/docs/intent/delivery/delivery-specs.md
+new file mode 100644
+index 0000000..d874101
+--- /dev/null
++++ b/docs/intent/delivery/delivery-specs.md
+@@ -0,0 +1,16 @@
++**LLD**: docs/intent/delivery/delivery-design.md
++
++# Delivery Specifications
++
++- [ ] **DELIVERY-001**: When a browser opens a WebSocket connection with a valid event ID and authorized role, the system shall accept the connection and send a WELCOME frame with sessionId, currentRevision, and boardSnapshot (if cursor omitted or stale) or cursor (if cursor is current).
++- [ ] **DELIVERY-002**: When a new revision is committed for an event, the system shall publish a REVISION frame to all active sessions for that event where session.cursor <= revision.
++- [ ] **DELIVERY-003**: The system shall publish revisions in strict (event_id, revision) order for each event.
++- [ ] **DELIVERY-004**: When a session sends RESYNC with a cursor, the system shall respond with CATCH_UP containing all revisions from cursor to currentRevision, or a full snapshot in WELCOME if the gap exceeds 500 revisions.
++- [ ] **DELIVERY-005**: The system shall send a HEARTBEAT frame every 15 seconds and close the session if no PING is received within 5 seconds.
++- [ ] **DELIVERY-006**: The system shall support 800 simultaneous WebSocket sessions per event.
++- [ ] **DELIVERY-007**: If a session's send buffer exceeds 64 KB, the system shall close the session with a GOODBYE frame (reason: backpressure).
++- [ ] **DELIVERY-008**: When the outbox has pending rows, the publisher shall poll at a base interval of 100 ms, backing off exponentially to 2 s when empty.
++- [ ] **DELIVERY-009**: If a REVISION frame send fails for a session, the system shall retry on the next poll iteration and not mark the outbox row published until all sessions have received it.
++- [ ] **DELIVERY-010**: When opening-time connection bursts exceed the handshake semaphore (200 concurrent), the system shall queue excess connections with a 5-second timeout and reject with ERROR { code: "CAPACITY", retryable: true }.
++- [ ] **DELIVERY-011**: The system shall mark an outbox row published_at only after the REVISION frame has been successfully sent to all active sessions for that event.
++- [ ] **DELIVERY-012**: If a session's ackedRevision lags currentRevision by more than 100, the system may send a proactive CATCH_UP to that session.
+\ No newline at end of file

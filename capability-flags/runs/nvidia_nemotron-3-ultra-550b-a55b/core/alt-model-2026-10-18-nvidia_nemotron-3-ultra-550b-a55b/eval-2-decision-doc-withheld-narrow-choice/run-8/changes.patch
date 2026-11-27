@@ -1,0 +1,140 @@
+diff --git a/docs/intent/previews/decisions/2q-eviction-policy.md b/docs/intent/previews/decisions/2q-eviction-policy.md
+new file mode 100644
+index 0000000..e774b52
+--- /dev/null
++++ b/docs/intent/previews/decisions/2q-eviction-policy.md
+@@ -0,0 +1,91 @@
++---
++node: previews
++---
++
++# Decision: Cache Eviction Policy — 2Q
++
++## Context
++
++The preview worker maintains a private 12 GiB cache of rendered JPEG contact sheets. Workloads alternate between long sequential screenings (many one-use sheets) and comparison sessions (repeated access to a small working set). The eviction policy must protect comparison sheets during screenings without adding bookkeeping that leaks outside the worker. Three candidates were evaluated.
++
++## Decision Elements
++
++### Gates
++
++- **G1: Cache privacy** — All replacement metadata and file paths must stay private to the preview worker. Other nodes do not access cache files, pin entries, or inspect counters. (Inherited from HLD tenet: "Keep cache paths and replacement bookkeeping private to the preview worker.")
++- **G2: External interface stability** — The `GET /internal/previews/{clip-id}/{revision}` contract (200 JPEG, 202 ticket, 404 unknown) must not change. (Inherited from previews LLD Architecture.)
++
++### Weighted Criteria
++
++| Criterion | Importance | Tenet |
++|-----------|------------|-------|
++| C1: Protects reused sheets from sequential-scan eviction | **major** | "Never treat a cache as the authoritative copy of source footage" — comparison sheets are the working set; evicting them defeats their purpose |
++| C2: Low bookkeeping overhead inside worker | **moderate** | — |
++| C3: Fast adaptation when editors switch projects | **moderate** | — |
++| C4: Implementation stays within worker (no cascade) | **minor** | — |
++
++## Options in the Domain
++
++### Option A: LRU (Least Recently Used)
++
++**Description** — Single queue ordered by last access. On hit, move to head. On admission when over budget, evict from tail. One timestamp or position per entry.
++
++**Demonstration** — `cache.get(key)` moves entry to head; `cache.admit(entry)` evicts tail until under 12 GiB.
++
++**Analysis**
++- G1: **passes** — single queue, private to worker
++- G2: **passes** — no interface change
++- C1: **weak** — a long screening scan pushes all comparison sheets to tail and evicts them
++- C2: **strong** — minimal bookkeeping (one position/timestamp)
++- C3: **strong** — immediately follows recent work; project switch naturally evicts old project
++- C4: **strong** — single data structure
++
++**Summary** — Simple, fast adaptation, but sacrifices the comparison working set during scans.
++
++---
++
++### Option B: Frequency-Based Eviction with Aging
++
++**Description** — Each entry tracks an access counter. Periodically (or on admission), all counters are decayed (e.g., halved). On admission when over budget, evict lowest-counted entries. Requires counter per entry and aging sweep.
++
++**Demonstration** — `entry.count++` on hit; `age_all_counters()` periodically; `evict_lowest_count()` on pressure.
++
++**Analysis**
++- G1: **passes** — counters private to worker
++- G2: **passes** — no interface change
++- C1: **strong** — repeatedly accessed sheets accumulate high counts and resist eviction
++- C2: **weak** — counter per entry + periodic aging sweep + tie-breaking logic
++- C3: **weak** — aging lag keeps yesterday's favorites warm; project switch retains stale counts
++- C4: **moderate** — aging sweep adds background work
++
++**Summary** — Protects popular clips well, but counter maintenance and aging lag project switches.
++
++---
++
++### Option C: 2Q (Two-Queue)
++
++**Description** — Two LRU queues sharing the 12 GiB budget: A1in (first admission, 25% / 3 GiB target) and Am (promoted on second access, 75% / 9 GiB target). On first admission, entry goes to A1in head. On hit in A1in, promote to Am head. On hit in Am, move to Am head. On admission pressure: evict A1in tail first; when A1in ≤ 3 GiB, evict Am tail.
++
++**Demonstration** — `cache.admit(e)` → `A1in.push_head(e)`; `cache.get(k)` in A1in → `A1in.remove(e); Am.push_head(e)`; `cache.get(k)` in Am → `Am.move_to_head(e)`.
++
++**Analysis**
++- G1: **passes** — two queues, private to worker
++- G2: **passes** — no interface change
++- C1: **strong** — comparison sheets reach Am on second access; A1in absorbs scan traffic
++- C2: **moderate** — two queues + promotion logic + size tracking per queue
++- C3: **moderate** — project switch flushes A1in quickly; Am retains cross-project hot sheets (tunable via split)
++- C4: **moderate** — extra queue and promotion path, but no background work
++
++**Summary** — Scan-resistant by design; accepts extra bookkeeping to protect the comparison working set.
++
++## Selection
++
++**Chosen: Option C — 2Q.**
++
++It is the only option that passes G1/G2 and achieves **strong** on C1 (the major criterion tied to the "never treat cache as authoritative" tenet) while keeping C2/C3 at **moderate** rather than weak. The 25/75 split is the initial tuning parameter; it can be adjusted based on observed workload without changing the external interface or cascading to other segments.
++
++What this commits us to:
++- Two-queue implementation with promotion logic inside the preview worker
++- Per-queue byte-size tracking (not entry count) to honor the 3/9 GiB targets
++- The 25/75 split as a runtime-configurable parameter (hot-reloadable or restart-required — to be decided in implementation)
++- No background aging sweep — eviction happens on admission pressure only
+\ No newline at end of file
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..8b42828 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,23 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The eviction policy is 2Q. It separates first-use entries from reused entries, protecting comparison sheets from one-off screening scans. This accepts extra bookkeeping (two queues and a size split) to keep repeatedly revisited clips warm during long sequential screenings. None of the candidates changes the external interface, queue concurrency, or disk budget.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q | LRU, Frequency-based with aging | 2Q protects reused sheets from sequential scan eviction. LRU evicts comparison sheets during long screenings. Aged frequency adds counter maintenance and lags project switches. 2Q keeps all changes inside the preview worker's private cache. [Decision doc](decisions/2q-eviction-policy.md) |
++
++## 2Q Cache Structure
++
++The private cache maintains two queues with a shared 12 GiB budget:
++
++- **A1in** (new entries): First admission queue. Entries enter here on their first cache admission after a render completes. Capacity target: 25% of budget (3 GiB).
++- **Am** (reused entries): Main queue for entries that have been accessed at least twice. Capacity target: 75% of budget (9 GiB).
++
++On cache hit in A1in: promote the entry to Am (move to head of Am).
++On cache hit in Am: move to head of Am (standard LRU within Am).
++On admission when over budget: evict from A1in tail first; if A1in is at or below its target, evict from Am tail.
++
++The 25/75 split is the initial tuning parameter; it may be adjusted based on observed workload without changing the external interface.
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..ab327a1 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,8 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++- [ ] **PREVIEW-006**: When a completed preview is admitted to the cache for the first time, the system SHALL place it in the A1in queue.
++- [ ] **PREVIEW-007**: When a cached preview in A1in is accessed, the system SHALL promote it to the head of the Am queue.
++- [ ] **PREVIEW-008**: When a cached preview in Am is accessed, the system SHALL move it to the head of the Am queue.
++- [ ] **PREVIEW-009**: When admitting a preview would exceed 12 GiB, the system SHALL evict from the A1in tail first; when A1in is at or below 3 GiB, the system SHALL evict from the Am tail.
++- [ ] **PREVIEW-010**: The system SHALL maintain the A1in capacity target at 25% (3 GiB) and Am capacity target at 75% (9 GiB) of the 12 GiB budget.

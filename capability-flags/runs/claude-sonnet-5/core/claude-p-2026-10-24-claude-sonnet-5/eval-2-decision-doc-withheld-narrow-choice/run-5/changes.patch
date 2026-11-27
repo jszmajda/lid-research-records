@@ -1,0 +1,105 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..fb0c223 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using 2Q eviction.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/decisions/cache-eviction-policy.md b/docs/intent/previews/decisions/cache-eviction-policy.md
+new file mode 100644
+index 0000000..157b2e6
+--- /dev/null
++++ b/docs/intent/previews/decisions/cache-eviction-policy.md
+@@ -0,0 +1,65 @@
++---
++node: previews
++---
++
++# Decision: Cache Eviction Policy
++
++## Context
++
++The preview worker's private cache holds at most 12 GiB of rendered JPEG contact sheets. Editors alternate between two access patterns against this cache: a long sequential screening that touches many clips once each, and a comparison session that repeatedly revisits a small working set. The mix of the two varies by production, so a policy that favors one pattern risks starving the other whenever the workload leans the other way. Whatever policy is chosen is private to the preview worker — the review API and render queue do not observe cache state, so the choice is free to change without touching any other node.
++
++## Decision Elements
++
++- **Inherited gate — stays inside the private cache.** The chosen policy may not change the review API's interface, the render queue's concurrency, or the 12 GiB disk budget. This follows from the architecture's tenet to keep cache paths and replacement bookkeeping private to the preview worker. All three candidate policies pass this gate.
++- **Weighted criterion (major) — protection of reused sheets during a long screening.** A long sequential screening must not be able to evict sheets that a comparison session is actively relying on. This is the failure mode editors raised directly: a big screening wiping out the working set they're comparing against.
++- **Weighted criterion (moderate) — bookkeeping cost.** Every access updates some piece of replacement-policy state; more elaborate state costs more CPU and memory per access, which matters on the single eight-core worker sized for 24 concurrent editors.
++- **Weighted criterion (moderate) — adaptation speed when an editor switches projects.** When an editor moves to a new project, the working set they were protecting becomes cold. A policy that clings to the old working set wastes cache capacity the new project needs.
++- **Weighted criterion (minor) — tuning burden.** A policy with a parameter that has no derivable value and must be tuned empirically is a standing cost: someone has to watch real workloads and adjust it.
++
++## Options in the Domain
++
++### LRU
++
++**Description.** Every cache entry is ordered by recency of last access, in a single list. A hit moves its entry to the most-recently-used end; eviction removes from the least-recently-used end. State per entry is just its position in one ordering.
++
++**Analysis:**
++- Protection of reused sheets (major): **weak**. A long sequential screening advances through many distinct clips, each becoming the most-recently-used entry in turn. Because there is only one ordering, this scan traffic pushes previously-reused comparison sheets toward eviction at the same rate it pushes through anything else — recency alone can't distinguish "seen once, moving on" from "seen repeatedly, still needed."
++- Bookkeeping cost (moderate): **strong**. One pointer move per access; no counters, no aging, no second structure.
++- Adaptation speed (moderate): **strong**. Because ordering is pure recency, a project switch's new working set naturally becomes most-recently-used and the old one ages out immediately with no lingering state.
++- Tuning burden (minor): **strong**. No parameters to set.
++
++**Summary.** Cheapest and most adaptive, but has no way to tell a one-off scan apart from a reused sheet.
++
++### Frequency-based eviction with aging
++
++**Description.** Each entry carries an access counter that increments on every hit and decays (ages) over time or on a periodic sweep. Eviction removes the lowest-counter entry. Aging keeps old popularity from permanently entrenching an entry.
++
++**Analysis:**
++- Protection of reused sheets (major): **strong**. A sheet accessed repeatedly during comparison accumulates a counter well above anything touched once during a scan, so scan traffic cannot evict it regardless of how long the screening runs.
++- Bookkeeping cost (moderate): **weak**. Every access updates a counter, and the aging mechanism itself is ongoing work — either a periodic sweep over all entries or decay logic evaluated on each access — on top of the base LRU-style tracking it would otherwise need for tie-breaking.
++- Adaptation speed (moderate): **weak**. A counter built up over a prior project decays on a schedule independent of the project switch itself; an editor's old favorites can outscore a new project's not-yet-popular sheets for some time after the switch, consistent with what you and the team observed.
++- Tuning burden (minor): **weak**. The aging rate (decay interval and decay factor) is itself a parameter with no obviously correct value, so this option does not avoid the tuning burden either.
++
++**Summary.** Best raw protection for repeatedly popular clips, but carries ongoing counter/aging maintenance and can keep stale favorites resident past a project switch.
++
++### 2Q
++
++**Description.** Entries are split across two queues. A sheet is admitted into a first-access queue (A1) on its first appearance. A second access before the entry would be evicted from A1 promotes it into a second, reused queue (Am). Eviction draws from A1 before ever touching Am, and within each queue evicts in order of admission (least-recently-added first). A1 is held to a fixed fraction of the 12 GiB budget; Am gets the rest.
++
++**Analysis:**
++- Protection of reused sheets (major): **strong**. One-off scan traffic from a long screening is confined to A1 and can only evict other A1 entries — it structurally cannot reach Am, so a sheet that has proven reuse is protected regardless of how long or large the screening is.
++- Bookkeeping cost (moderate): **partial**. Cheaper than aged counters — each entry needs only a queue membership and a position — but still more than LRU's single list: two queues to maintain and a promotion check in the access path.
++- Adaptation speed (moderate): **partial**. A new project's sheets enter A1 and promote to Am on reuse just as quickly as LRU would re-rank them, so adaptation on the way in is fast. The old project's Am entries, however, don't get swept out by the switch itself — they age out of Am only as new entries promote in and push them out by Am's own ordering, which is slower than LRU's immediate re-ranking.
++- Tuning burden (minor): **weak**. The A1/Am size split has no derived value and needs empirical tuning against the real screening/comparison mix, which is exactly the standing cost this criterion penalizes.
++
++**Summary.** The only option that structurally isolates scan traffic from reused sheets, at the cost of a second queue and a split that must be tuned rather than derived.
++
++## Selection
++
++**Chosen: 2Q.**
++
++The major criterion — protecting reused comparison sheets from a long sequential screening — is the one editors raised directly, and it's the one LRU fails outright: a single recency ordering cannot distinguish "touched once while scanning" from "touched repeatedly while comparing," so scan traffic and reused sheets compete for the same eviction order. That failure mode is disqualifying given how the workload is described: long screenings and repeated comparisons are both routine, not edge cases. This decision turns on the HLD tenet to key the cache so replacement bookkeeping stays private and the architecture's broader goal of serving 24 concurrent editors predictably — a policy that can be wiped out by one editor's screening session undermines that predictability for everyone else sharing the cache.
++
++Frequency-based aging also protects reused sheets, and does so with a single ranking rather than two queues, but its ongoing per-access counter maintenance and its tendency to keep a prior project's favorites resident after a switch are real costs with no comparable offsetting strength over 2Q — 2Q gets the same scan protection without the aging mechanism's upkeep or its lag on project switches.
++
++Choosing 2Q forecloses the cheap single-structure bookkeeping LRU offered and obligates the implementation to carry two queues plus a promotion path on every access. It also obligates tuning: the A1/Am size split is not derivable from the goals as stated and is recorded as an open question in `previews-design.md`, to be set empirically during the pilot against observed screening/comparison ratios. If the pilot's workload mix turns out to be far more one-sided than expected — nearly all scanning, or nearly all comparison — this split may need revisiting, and that is the first place to look if 2Q underperforms in practice.
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..378e4a7 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,15 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The cache uses 2Q eviction. A newly admitted sheet enters a first-access queue (A1); a second access before eviction promotes it to a reused queue (Am). Eviction draws from A1 first, then Am, each in least-recently-added order within its own queue. A1 is held to a fixed fraction of the 12 GiB budget, sized to absorb a long sequential screening without exhausting Am; the remainder of the budget is available to Am. The A1/Am size split is private replacement bookkeeping, tuned empirically rather than derived, and is not exposed to any other node.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (first-access queue A1, reused queue Am) | LRU; frequency-based eviction with aging | See [`decisions/cache-eviction-policy.md`](decisions/cache-eviction-policy.md). 2Q is the only option that structurally isolates one-off scan traffic from sheets with proven reuse, at the cost of a second queue and an A1/Am size split that needs tuning. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++1. The A1/Am size split has no derived value yet; it will be tuned against observed screening/comparison mixes during the pilot.

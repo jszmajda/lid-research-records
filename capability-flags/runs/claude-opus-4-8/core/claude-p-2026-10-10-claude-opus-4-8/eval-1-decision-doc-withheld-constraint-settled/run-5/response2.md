@@ -1,0 +1,7 @@
+Overkill — a row is right, and I'd keep it as the row I've already written.
+
+The test for a decision doc isn't "was this hard to decide?" (you did go back and forth) — it's forward-looking: *would a cold reader of the landed design re-litigate this without the full options-and-criteria laid out?* Here they wouldn't. The HLD tenets ("no runtime network access," "no network route during normal operation") eliminate the HTTPS-directory and managed-service options outright, so the choice reads as settled by an inherited constraint once it lands. That's exactly the case the heuristic points at a one-line Decisions & Alternatives row, not a standalone doc — and a doc would age into the kind of residue LID strips, re-arguing a question the tenets already close.
+
+A decision doc would earn its place if the constraint weren't doing the work — if all three options were genuinely eligible and you were trading, say, maintenance burden against future search richness against cost with no tenet settling it. If you're anticipating the kiosks might get a network route later (which would reopen the other two), that's not a decision doc either — it's an HLD change, and we'd reopen the choice there.
+
+So: the row stays. If you're good with that, I'll move on to the HLD phrase fix and the edge-probe triage, then cascade to the EARS specs.

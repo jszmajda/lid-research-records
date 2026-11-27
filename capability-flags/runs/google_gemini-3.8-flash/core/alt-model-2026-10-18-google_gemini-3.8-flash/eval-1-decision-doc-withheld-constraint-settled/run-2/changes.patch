@@ -1,0 +1,126 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..bcaa43d 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup using a local embedded SQLite index.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..f2faf96 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,100 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Design Philosophy
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and require its calibration date, due date, and equipment description. Equipment snapshots are signed and delivered via approved USB media. The registry component validates incoming snapshots and maintains an indexed local storage engine to support fast, deterministic lookups entirely offline.
+ 
+-## Architecture
++## Architecture and Interface
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++The registry exposes a query interface:
++- `findBySerial(serial: string)` -> `Found(record, snapshotDate)` | `NotFound(snapshotDate)`
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Record attributes returned on `Found`:
++- `serial`: normalized serial number
++- `description`: equipment description string
++- `calibrationDate`: ISO-8601 date string
++- `dueDate`: ISO-8601 date string
+ 
+-## Snapshot Import
++The lookup interface and return contracts are fixed and completely decoupled from storage internals; the certificates component interacts exclusively through this contract.
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++## Snapshot Validation and Import
++
++A signed snapshot bundle contains newline-delimited JSON (NDJSON) records, a schema version identifier, a snapshot generation date, and a cryptographic signature manifest.
++
++Import proceeds in sequential phases:
++1. **Signature Verification**: Validate the snapshot signature against the kiosk's bundled public key.
++2. **Schema and Header Check**: Verify the schema version matches supported versions.
++3. **Staging Build**:
++   - Create a new SQLite database in a staging file (`registry.staging.db`).
++   - Populate the `snapshot_metadata` table with the snapshot date and schema version.
++   - Parse records line by line, validating serial number uniqueness. If duplicate serial numbers are encountered, fail import.
++   - Insert records into the `equipment` table with both raw and normalized serial forms.
++   - Build an index on the normalized serial number.
++4. **Atomic Activation**:
++   - Close staging database write connection.
++   - Atomically replace the active database file (`registry.db`) via filesystem rename (`rename(staging, active)`).
++   - Reopen or point the read-only lookup connection to the new database.
++5. **Failure Handling**:
++   - Any validation or write failure aborts the staging process and removes the temporary staging database.
++   - The active database remains untouched, preserving continuous service on the previous valid snapshot.
++
++## Storage and Index Structure
++
++Local storage uses an embedded SQLite database configured for read-heavy kiosk operations:
++
++### Schema
++```sql
++CREATE TABLE snapshot_metadata (
++    snapshot_date TEXT NOT NULL,
++    schema_version TEXT NOT NULL,
++    imported_at TEXT NOT NULL
++);
++
++CREATE TABLE equipment (
++    serial_normalized TEXT PRIMARY KEY,
++    serial_raw TEXT NOT NULL,
++    description TEXT NOT NULL,
++    calibration_date TEXT NOT NULL,
++    due_date TEXT NOT NULL
++);
++```
++
++### Concurrency and Performance
++- Lookups operate over a read-only SQLite connection.
++- `PRAGMA query_only = ON;` and `PRAGMA journal_mode = WAL;` (or rollback journal suitable for read-only filesystem mounts).
++- Primary key B-tree index on `serial_normalized` ensures O(log N) point lookup, comfortably resolving queries within the 250 ms budget for 90,000 records.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++1. **Normalization**:
++   - Strip leading and trailing whitespace.
++   - Convert ASCII letters to uppercase (`[a-z]` -> `[A-Z]`).
++   - Retain all serial punctuation, numbers, and symbols intact.
++2. **Execution**:
++   - Execute indexed point query against `equipment` using `serial_normalized`.
++   - Read active `snapshot_date` from `snapshot_metadata`.
++   - If row exists, return `Found(record, snapshotDate)`.
++   - If no row matches, return `NotFound(snapshotDate)`.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup Backend | Local embedded SQLite index | On-site HTTPS directory, Managed search service | Preserves kiosk offline isolation tenet (no runtime network access). Point lookups on indexed SQLite easily satisfy the <250ms latency target on 4 GB RAM kiosks without running an external service daemon. Index construction overhead is confined entirely inside the registry component during snapshot import. |
++| Snapshot Activation Mechanism | Staged SQLite database build with atomic filesystem swap | In-place transactional update, In-memory reconstruction | Building into a separate staging file and swapping via atomic rename ensures that snapshot import errors, partial transfers, or process crashes never corrupt or expose uncommitted records to concurrent lookups. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Backend selection: Local embedded SQLite index chosen to maintain kiosk offline isolation.
++2. ✅ Snapshot isolation: Staged SQLite file build with atomic rename guarantees atomic activation.
++
++### Deferred
++1. SQLite PRAGMA tuning during staging import (e.g., `synchronous = OFF` during initial staging build for faster imports vs `NORMAL` for safety).
++
++## References
++
++- `docs/high-level-design.md`
++- `docs/intent/registry/registry-specs.md`
++- `docs/intent/certificates/certificates-design.md`

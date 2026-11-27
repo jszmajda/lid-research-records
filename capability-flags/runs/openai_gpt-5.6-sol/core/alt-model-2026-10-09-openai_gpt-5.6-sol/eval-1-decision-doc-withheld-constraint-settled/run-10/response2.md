@@ -1,0 +1,3 @@
+A separate decision doc would be overkill. The HLD’s offline-only constraint eliminates both networked alternatives, and the choice affects only the registry node while preserving the certificate interface. A `Decisions & Alternatives` row in the registry LLD can capture SQLite, the rejected options, and the rationale adequately.
+
+If you approve the Phase 1 HLD update, I’ll proceed with that approach.

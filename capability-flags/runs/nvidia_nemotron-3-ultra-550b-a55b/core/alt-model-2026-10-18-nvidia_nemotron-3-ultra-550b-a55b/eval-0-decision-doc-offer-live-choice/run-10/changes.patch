@@ -1,0 +1,151 @@
+diff --git a/docs/decisions/change-delivery-approach.md b/docs/decisions/change-delivery-approach.md
+new file mode 100644
+index 0000000..55eb906
+--- /dev/null
++++ b/docs/decisions/change-delivery-approach.md
+@@ -0,0 +1,113 @@
++---
++node: high-level-design
++---
++
++# Decision: Change Delivery Approach
++
++## Context
++
++MarketBoard delivers committed board changes to up to 800 simultaneous browsers per event. The delivery mechanism must meet a 15-second freshness target under normal connectivity, support opening-time bursts of 20 edits/second, and allow browsers to recover the latest board after up to 20 minutes of disconnection. Three viable approaches exist, each with distinct operational and cost tradeoffs. The choice shapes the change store's outbox design, the delivery component's session model, and the browser sync's reconnection logic.
++
++## Decision Elements
++
++### Gates (binary — an option that fails is eliminated)
++
++- **Vendor independence** — The system must not require a recurring contract with a realtime provider. (Inherited from tenet: "Self-hosted and managed infrastructure are both permitted.")
++- **Meets freshness target** — Must deliver committed changes to connected browsers within 15 seconds under normal connectivity. (Inherited from Goal: "Show committed changes in connected browsers within 15 seconds under normal connectivity.")
++- **Supports 800 concurrent browsers** — Must handle peak connection count without degradation. (Inherited from Goal: "Support 800 simultaneous browsers.")
++
++### Weighted Criteria
++
++| Criterion | Importance | Tenet Link |
++|-----------|------------|------------|
++| Operational complexity (connection mgmt, reconnect, capacity planning) | **Major** | — |
++| Update latency (time from commit to browser receipt) | **Major** | "A committed edit has one authoritative event revision regardless of its delivery route" — low latency keeps all delivery routes equivalent |
++| Recurring cost | **Moderate** | — |
++| Implementation effort (initial build) | **Minor** | — |
++| Browser recovery simplicity (catch-up after disconnect) | **Moderate** | "Recover the latest board after a browser has been disconnected for up to 20 minutes" |
++
++## Options in the Domain
++
++### Option 1: Five-Second HTTPS Polling
++
++**Description** — Browsers poll the server every 5 seconds via HTTPS GET with a cursor (last-seen revision). The server returns any new revisions since that cursor. The change store provides cursor-based range queries. No persistent connections; each poll is a stateless request/response.
++
++**Demonstration** — Browser timer fires → `GET /events/123/board?since=rev-47` → server queries store for revisions > 47 → returns `[rev-48, rev-49]` → browser applies and updates UI.
++
++**Analysis**
++
++- Vendor independence: **passes** — pure HTTPS, no external dependency.
++- Meets freshness target: **passes** — worst-case 5s polling interval + network RTT < 15s.
++- Supports 800 concurrent browsers: **passes** — stateless reads scale horizontally; 800 clients × 12 req/min = ~9,600 req/min, trivial for a modest API tier.
++- Operational complexity: **strong fit** — no connection state, no reconnect logic, no capacity planning for persistent connections. Standard HTTP scaling patterns apply.
++- Update latency: **weak fit** — 2.5s average lag, up to 5s worst case. Meets target but provides no headroom.
++- Recurring cost: **strong fit** — zero recurring fees beyond standard hosting.
++- Implementation effort: **strong fit** — simplest to build; cursor queries are a straightforward store index.
++- Browser recovery simplicity: **strong fit** — on reconnect, browser polls with its last revision; store returns all missing revisions in one response. No special catch-up protocol needed.
++
++**Summary** — Simplest operations and build, but 2.5–5s inherent latency ceiling.
++
++---
++
++### Option 2: Self-Hosted WebSockets
++
++**Description** — Browsers open a persistent WebSocket connection to the server on load. The server pushes committed changes to all connected sockets for that event in real time. The change store provides an append-only revision log with a publication outbox. The delivery component manages socket lifecycle (accept, heartbeat, backpressure, cleanup) and server-side reconnection state (tracking each socket's last-acked revision). Browser sync handles client-side reconnection with exponential backoff and requests missed revisions from the store via a catch-up endpoint.
++
++**Demonstration** — Editor commits rev-50 → store appends to log, writes to outbox → delivery reads outbox, pushes `{type: "update", revision: 50, ...}` to all 800 sockets → browsers receive and apply within ~100ms. Browser disconnects for 10min → reconnects with `lastSeen: 49` → delivery serves catch-up query for revisions 50–current → browser applies and resumes live updates.
++
++**Analysis**
++
++- Vendor independence: **passes** — self-hosted, no external provider.
++- Meets freshness target: **passes** — subsecond push latency, well within 15s.
++- Supports 800 concurrent browsers: **passes** — 800 persistent connections is modest for a single Node/Go/Rust process with proper async I/O; horizontal scaling via sticky sessions or a connection broker if needed later.
++- Operational complexity: **weak fit** — owns connection capacity planning, heartbeat/timeout tuning, backpressure handling, graceful drain on deploy, server-side reconnection state per socket, horizontal scaling of sticky connections. This is real ongoing ops work.
++- Update latency: **strong fit** — subsecond delivery; all browsers see changes near-simultaneously.
++- Recurring cost: **strong fit** — no vendor fees; incremental compute for connections is small.
++- Implementation effort: **weak fit** — most complex of the three: delivery session manager, outbox consumer, reconnection state machine, client reconnect/catch-up logic.
++- Browser recovery simplicity: **partial fit** — requires explicit catch-up protocol (request missed revisions by range) and client-side reconnection orchestration. More moving parts than polling, but well-understood pattern.
++
++**Summary** — Best latency, no vendor bill, but accepts meaningful connection/reconnect operational burden.
++
++---
++
++### Option 3: Hosted Realtime Service (e.g., Pusher, Ably, Firebase)
++
++**Description** — Browsers subscribe to event channels via the provider's SDK. The server publishes committed changes to the provider's API. The provider manages connection scaling, heartbeats, reconnection, and message fan-out globally. The change store publishes to an outbox; a delivery adapter reconciles outbox entries with provider publishes (idempotency, ordering). Browser sync uses the provider's subscription model and built-in reconnection.
++
++**Demonstration** — Editor commits rev-50 → store appends to log, writes to outbox → delivery adapter reads outbox, calls `pusher.trigger("event-123", "update", {...})` → provider fans out to 800 subscribed browsers → browsers receive via SDK callback. Browser disconnects → SDK auto-reconnects → on resume, browser requests missed revisions from store (or provider offers history API).
++
++**Analysis**
++
++- Vendor independence: **eliminated** — requires ongoing contract with a realtime provider. Fails the vendor-independence gate.
++- Meets freshness target: **passes** — subsecond global delivery.
++- Supports 800 concurrent browsers: **passes** — provider handles connection scaling transparently.
++- Operational complexity: **strong fit** — provider owns connection capacity, heartbeats, reconnection, global fan-out. Minimal ops surface.
++- Update latency: **strong fit** — subsecond, globally distributed edge.
++- Recurring cost: **weak fit** — monthly fees scale with connections/messages. At 800 concurrent × 730 hrs/mo ≈ 584k connection-hours; typical pricing ~$50–200/mo for this tier, recurring forever.
++- Implementation effort: **strong fit** — thinnest delivery code; mostly SDK integration and outbox reconciliation.
++- Browser recovery simplicity: **strong fit** — provider SDK handles reconnection; catch-up via store query or provider history.
++
++**Summary** — Lowest operational burden and fastest implementation, but locks in recurring vendor cost and coupling.
++
++---
++
++## Selection
++
++**Chosen: Self-Hosted WebSockets (Option 2).**
++
++**Why it wins:**
++
++- **Vendor independence** is a gate — Option 3 is eliminated outright. The project explicitly permits self-hosted infrastructure (tenet: "Self-hosted and managed infrastructure are both permitted") and the user accepted the ops burden to avoid vendor coupling.
++- **Latency** is a major criterion where Option 2 (strong) decisively beats Option 1 (weak). Subsecond updates keep all delivery routes equivalent per the tenet "A committed edit has one authoritative event revision regardless of its delivery route" — polling's 5s lag would make WebSocket and hosted routes feel like different products.
++- **Recurring cost** (moderate) favors Options 1 and 2 over 3. The project has no declared budget override; avoiding a perpetual line item is preferred.
++- **Operational complexity** (major) is Option 2's weakness, but the user explicitly accepted it: "I'll accept the extra connection and reconnect operations work to get fast updates without tying the board to a realtime vendor."
++- **Browser recovery** (moderate) is a partial fit for Option 2, but the catch-up protocol is a known pattern (revision range query) and the store already provides replayable revisions for this purpose.
++
++**Implications of committing:**
++
++- **Forecloses**: The simplicity of stateless polling (Option 1) and the zero-ops realtime of a hosted service (Option 3).
++- **Obligates downstream**:
++  - *Change store* must provide an append-only revision log with a publication outbox (ordered, at-least-once delivery to delivery component).
++  - *Delivery* must implement WebSocket session management (accept, heartbeat, backpressure, graceful drain), server-side reconnection state (per-socket last-acked revision), and outbox consumption with idempotent publish.
++  - *Browser sync* must implement client-side WebSocket connection with exponential-backoff reconnection, catch-up query on resume (request revisions since `lastSeen`), and seamless transition from catch-up to live updates.
++- **Tenet engagement**: Turns on "A committed edit has one authoritative event revision regardless of its delivery route" by making latency negligible across all browsers. Taken against operational simplicity — the tenet "Connectivity failures must be visible, not mistaken for an unchanged board" is addressed by explicit connection-state UI in browser sync (not by the delivery choice itself).
+\ No newline at end of file
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 34ebfe7..4a16c0b 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -6,16 +6,16 @@ Forty weekend markets currently relay stall closures, late arrivals, and power p
+ 
+ ## Approach
+ 
+-Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. The approach for delivering committed changes is still open: five-second HTTPS polling, self-hosted WebSockets, or a hosted realtime service. All three can meet the required freshness target. Subsecond updates would be useful, but are not required.
++Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. **Delivery uses self-hosted WebSockets.** Committed changes are published to socket sessions; browsers subscribe and receive updates with subsecond latency. The store provides replayable revisions for catch-up after disconnect. Connection management and reconnection logic live in the delivery component; browser sync handles subscription, reconnect, and catch-up.
+ 
+-Delivery, change storage, and browser recovery must be designed together after this choice. Polling would favor cursor queries; self-hosted sockets would need connection management and replay; hosted delivery would need publication reconciliation and provider credentials. Neither operating cost nor minimum operational burden has been declared the overriding criterion.
++Self-hosted WebSockets were chosen over five-second HTTPS polling and hosted realtime services. Polling would add repeated reads and 5-second lag; hosted services would add recurring fees and provider coupling. The project accepts the operational work of connection capacity and reconnect logic to keep fast updates without vendor dependency.
+ 
+ ## Architecture
+ 
+ - Access: `docs/intent/access/access-design.md`, with `docs/intent/access/access-specs.md`. Written below the stable HTTPS command boundary.
+-- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Revision history, read indexes, and any publication outbox depend on the delivery approach.
+-- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Owns polling responses, socket sessions, or hosted publication, depending on the approach.
+-- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Its subscription, reconnect, and catch-up behavior depend on the approach.
++- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Provides revision history, read indexes, and a publication outbox for WebSocket delivery.
++- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Owns WebSocket sessions, publication to connected browsers, and server-side reconnection state.
++- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Handles WebSocket subscription, client-side reconnection, and revision catch-up.
+ 
+ ## Tenets
+ 
+@@ -41,3 +41,4 @@ Delivery, change storage, and browser recovery must be designed together after t
+ ## Key Design Decisions
+ 
+ - **Commands over HTTPS, one authoritative board per event.** Editors submit commands to the server, which assigns each committed edit one event revision. Peer-to-peer or browser-side merging was rejected: the tenets require one authoritative revision regardless of delivery route, and offline editing is a non-goal.
++- **Self-hosted WebSockets for change delivery.** Chosen over five-second HTTPS polling and hosted realtime services. Accepts connection management and reconnect complexity to achieve subsecond updates without recurring fees or provider coupling. The change store provides replayable revisions; delivery manages WebSocket sessions; browser sync handles subscription, reconnect, and catch-up. See `docs/decisions/change-delivery-approach.md` for the full tradeoff analysis.

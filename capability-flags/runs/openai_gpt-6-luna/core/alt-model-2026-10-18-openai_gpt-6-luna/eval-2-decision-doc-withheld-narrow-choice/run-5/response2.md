@@ -1,0 +1,3 @@
+Yes. **2Q merits a decision doc**: LRU, aged frequency, and 2Q are credible options with different tradeoffs, and a future reader could reasonably revisit the choice as screening workloads change. The doc should capture why protecting reused comparison sheets outweighs 2Q’s added bookkeeping, and record the queue-size tuning as a design obligation. It belongs under the previews segment, alongside the LLD.
+
+I’ll include it in the preview design work. Do you approve the HLD update so I can proceed?

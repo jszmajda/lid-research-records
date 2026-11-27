@@ -1,0 +1,5 @@
+The lookup backend choice is a load-bearing architectural decision with three credible alternatives traded against predictability, network dependency, maintenance burden, and cost. A cold reader landing on the registry LLD would likely question why local SQLite was chosen over a centrally maintained HTTPS directory — the alternatives are still defensible and the criteria span more than one dimension.
+
+That meets the earns-its-place heuristic for a decision doc: the choice stays live enough that without the competing options and criteria a future reader would be tempted to re-litigate it.
+
+We already have the Decisions & Alternatives table row capturing the choice. Do you want me to create a full decision doc at `docs/intent/registry/decisions/lookup-backend-selection.md` alongside that row, or is the table row sufficient for this node?

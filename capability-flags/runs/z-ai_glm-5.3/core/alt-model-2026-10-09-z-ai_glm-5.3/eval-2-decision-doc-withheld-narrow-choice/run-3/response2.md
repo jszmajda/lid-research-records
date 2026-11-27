@@ -1,0 +1,7 @@
+My honest read: the row is enough, and a doc would be the wrong instinct to follow — though it's yours to call.
+
+The workflow's test runs on the *landed* result, not the fight it took to get there: would a cold reader of the design question the choice or be tempted to reverse it? Reading the LLD, the Decisions & Alternatives row already tells them the three options, why LRU loses the comparison set to screening scans, and why aged frequency lags a project switch. The interface is policy-invariant and no other node is sized around 2Q, so there's nothing else for a doc to anchor. The three meetings and the 180-message thread are deliberation, not design — a doc that memorializes the debate is exactly the residue the "docs carry current intent" rule strips out. Length of argument alone is the case the skill explicitly says not to reward.
+
+The one genuine argument for a doc: you'll tune the split during the pilot, and if that tuning goes badly someone might re-open the policy — the full options/criteria would help them re-run the judgment rather than re-litigate it from scratch. I think the row covers that too, but it's the closest call.
+
+If you still want the doc after that, I'll write it in `docs/intent/previews/decisions/` and link it from the row — you're always right, with the warning made once. Which way?

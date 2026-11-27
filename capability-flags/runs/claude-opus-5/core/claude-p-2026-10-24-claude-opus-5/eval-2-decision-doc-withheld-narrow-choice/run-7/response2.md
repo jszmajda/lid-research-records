@@ -1,0 +1,11 @@
+Honestly: I don't think it earns one, and the three meetings are the reason I'm fairly confident rather than the reason to reconsider.
+
+The test I'm applying runs from the landed state, not the deliberation — would a cold reader of the result question this choice or be tempted to reverse it? Here they'd read an HLD that says editors interleave long sequential screenings with repeated comparisons of a small working set, then a Decisions row that names LRU and aged frequency counts, says what each costs, and says the bookkeeping was accepted deliberately to protect comparison sheets during screenings. That's reconstructable. The choice also doesn't travel: the HLD is explicit that nothing outside the preview worker reads cache files, pins entries, or consumes eviction metadata, so no other node gets sized around the result and no sibling design has to be re-reasoned if you ever revisit it. A decision doc's job is to keep a live debate re-runnable for someone about to build against it — and there's nobody downstream in that position.
+
+What stays genuinely live is narrower and already placed: the first-use share and the key-list bound sit in Open Questions, and the reuse-queue cap question in (b) below. Those are tuning and a retention preference, not the 2Q-vs-LRU argument.
+
+The cost of writing one anyway isn't the hour — it's that `decisions/` directories full of settled-obvious choices stop signalling anything, so the one doc you write later for a genuinely contested call reads like the rest. I'd rather spend the page on the mechanics the blind probe found unpinned.
+
+That said, it's your call and you've lived the argument in a way the test can't see. If you want it, say so and I'll write it — options, criteria, selection, at a resolution someone could re-run the judgment from — and link it from the Decisions row.
+
+Either way, (a), (b) and (c) from the last message are still open, and (b) is the one I can't settle for you: **capped** reuse queue, so screening churn is always confined to the first-use share, or **elastic**, free to grow into the whole budget on quiet days and accept that a screening starting from there pushes against comparison sheets before the first-use queue refills?

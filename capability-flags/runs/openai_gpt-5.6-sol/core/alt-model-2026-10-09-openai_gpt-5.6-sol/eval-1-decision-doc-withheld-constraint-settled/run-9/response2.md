@@ -1,0 +1,1 @@
+A separate decision doc would be overkill. Although the options had real tradeoffs, the SQLite choice affects only the registry node and its rationale fits cleanly in the LLD’s Decisions & Alternatives table. A future reader can understand and reconsider it from that row without a standalone document.

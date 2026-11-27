@@ -1,0 +1,3 @@
+Overkill — a Decisions & Alternatives row is the right record, which is what I already wrote.
+
+The test is the *landed* state, not how long the deliberation ran. Judged as it will read cold: the offline tenet ("no runtime network access is permitted") is an inherited constraint that eliminates the on-site HTTPS directory and the managed search service, and the choice affects only the Registry node — the certificate interface is explicitly unchanged. The skill's rule is to *not* offer a doc for a choice an inherited constraint settles or that affects only its own node, however contested it felt at the time. So: row, no doc.

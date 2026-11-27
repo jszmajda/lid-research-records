@@ -1,0 +1,5 @@
+Overkill — skip the decision doc.
+
+The test is whether a cold reader of the *landed* choice would still question it or be tempted to reverse it. Here that's not the case: the HLD already forbids runtime network access and restricts updates to signed USB snapshots, so the HTTPS directory and managed search options were never actually viable — an inherited constraint settles this, not a genuine live tradeoff between comparable options. The skill's own guidance is explicit that a choice an inherited constraint settles doesn't earn a decision doc, however much back-and-forth it took to get there.
+
+The Decisions & Alternatives row I already added to `registry-design.md` captures this adequately — the choice, the two rejected alternatives, and the tenet-driven reason. That's the right amount of record for this one.

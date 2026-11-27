@@ -1,0 +1,121 @@
+Decision doc written and linked from the HLD.
+
+**New file — `docs/decisions/delivery-approach.md`** (project-level decision, owned by `high-level-design`; no EARS IDs):
+
+```markdown
+---
+node: high-level-design
+---
+
+# Decision: Realtime Delivery for the MarketBoard
+
+## Context
+
+MarketBoard coordinators need a stall-status board where an edit made by one coordinator shows up on the other coordinators' screens while a market is running. The board already has an authoritative model: editors submit commands over HTTPS, the server assigns each committed edit one event revision, and browsers read a revisioned view of that board. What the board lacked was a decision about how a committed revision reaches a browser that is already open on the page.
+
+The board's usage shape makes this consequential. About 120 coordinators work across forty markets, with up to 800 browsers connected at once, and a busy market sees 10-25 editors making roughly two status changes per minute with bursts around opening time. Committed changes must reach connected browsers within 15 seconds, a browser that has been disconnected for up to 20 minutes must be able to recover the latest board, seven days of revisions must be retained for operational investigation, and the board must be available for 99.5 percent of published event hours.
+
+The cost profile matters as much as the latency profile. MarketBoard is a volunteer-coordinator tool, not a revenue product: there is no subscription to charge for a realtime vendor, and vendor payments are an explicit non-goal. Event updates carry stall IDs and operational statuses rather than customer records, so a vendor relationship would be a new kind of exposure rather than a continuation of existing practice.
+
+The wrong choice is expensive in both directions. Too much latency costs coordinators a market's worth of confusion at opening time. Too much infrastructure costs a volunteer-run project attention it does not have, and a delivery path with a vendor in it adds a dependency that cannot be dropped when that attention is short. The board needs one delivery approach whose operating burden the project can actually carry.
+
+This decision fixes the delivery approach for the pilot. It does not fix how the change store records revisions, how the delivery node manages sessions, or how the browser reconnects — those are the change-store, delivery, and browser-sync nodes, and they are sized by this choice.
+
+## Decision Elements
+
+### Gates
+
+- **No vendor payments.** The project does not buy a managed realtime service. This is a standing non-goal of the board, not a preference introduced by this decision.
+- **One authoritative revision per committed edit.** Every delivery route carries the same event revision, assigned by the server when the edit commits. No option may merge or re-derive edits on the client.
+
+### Weighted criteria
+
+- **Update freshness to connected browsers (major).** How quickly does a committed revision appear on an already-open browser? The committed target is 15 seconds; subsecond arrival is the strongest form of this criterion.
+- **Cost of the delivery path (major).** What does it cost to run this option for a year — recurring fees, per-connection charges, infrastructure, and the labor to operate it. Named as major because the board has no revenue to absorb a recurring bill.
+- **Vendor coupling (major).** How much of the board's behavior and its future options depend on a third party that could change its API, its pricing, or its availability. This criterion is the tenet *Own the operations over vendor coupling* made concrete: where self-hosted and managed options both work, the lean is toward the one the project operates.
+- **Recovery burden after a disconnection (moderate).** How much machinery is required to bring a browser that missed revisions up to date, and how much of that machinery is ours to write and to keep working.
+- **Operational load at connection scale (moderate).** What it takes to hold 800 concurrent connections and absorb opening-time bursts of 20 edits per second, including the behavior when the server itself restarts.
+- **Delivery guarantees (minor).** Whether a committed revision reaches every connected browser exactly once and in order, and what a browser can conclude about what it has missed.
+
+## Options in the Domain
+
+### Option A — Five-second HTTPS polling
+
+Browsers hold no long-lived connection to the board. Every browser periodically issues an HTTPS request asking for board revisions newer than the one it holds, on a fixed five-second interval, and applies whatever comes back. The board's existing read path serves these requests.
+
+- **Description:** The simplest possible delivery path, and the one with the least machinery. There is no server-side state about who is connected, because no one is "connected" — a browser is simply a client that asks. The server answers each request with the revisions that have happened since the browser's last position, which the change store can serve from a revision log with a cursor.
+
+- **Demonstration:** 800 browsers each polling every five seconds put 160 requests per second against the read path in steady state, and each request carries a cursor and returns a small payload. A browser that has been closed for twenty minutes performs 240 of those requests before it holds a current board.
+
+- **Analysis:**
+  - No vendor payments: **passes**.
+  - One authoritative revision per edit: **passes** — the server assigns revisions identically to every other option.
+  - Update freshness: **weak**. The five-second interval puts the expected wait at two and a half seconds and the worst case at a full interval plus request time, so arriving well inside a second is not achievable by construction. The 15-second target is met with large margin, so the committed goal is not at risk.
+  - Cost of the delivery path: **strong**. No recurring fee, no per-connection charge, and the read path is the same path the board already has.
+  - Vendor coupling: **strong**. No vendor is involved at any layer.
+  - Recovery burden after a disconnection: **strong**. Catch-up is the ordinary case — a browser asks for what it missed and gets it — so no separate recovery machinery is needed.
+  - Operational load at connection scale: **partial**. There is no connection state to hold, but 160 requests per second is repeated work for the same data, and the load rises with every added browser rather than being proportional to actual change volume.
+  - Delivery guarantees: **partial**. Polling clients can lose a response and retry, and a browser that reads its own position state must track a cursor consistently; nothing in the transport guarantees ordering or exactly-once delivery.
+
+- **Summary:** Trades freshness and repeated reads for the smallest possible operating burden and no dependency on anyone else.
+
+### Option B — Self-hosted WebSockets
+
+The project runs its own WebSocket endpoints alongside the HTTPS command API. A browser opens a socket after it has identified itself, the server authorizes that connection for the events the browser may watch, and the server pushes each committed revision to the connections watching that event. A browser that was disconnected reconnects and asks for the revisions it missed.
+
+- **Description:** A delivery path in which the server holds state about who is connected and is responsible for getting each committed revision to the browsers watching its event. The change store must therefore keep revisions replayable, and the delivery node must own session lifecycle: accepting connections, authorizing them, tracking the last revision each session has seen, and closing sessions that have gone away. Browsers must handle the socket dropping and re-synchronize.
+
+- **Demonstration:** A coordinator commits a stall closure, producing revision 4712 for their market. The server pushes 4712 to the 40 sockets watching that market and they apply it in well under a second. A coordinator whose laptop slept for twelve minutes reconnects with its cursor at revision 4698 and receives 4699 through 4712 before resuming live updates.
+
+- **Analysis:**
+  - No vendor payments: **passes**.
+  - One authoritative revision per edit: **passes** — the pushed revision is the same event revision the store assigned.
+  - Update freshness: **strong**. A committed revision is pushed as it commits, so arrival is governed by network latency rather than by an interval, and the browser is typically current well inside a second.
+  - Cost of the delivery path: **partial**. No recurring fee, but real infrastructure cost — the server must hold 800 concurrent connections, and the project operates and maintains that capacity itself.
+  - Vendor coupling: **strong**. The protocol is ours and the endpoint is ours; nothing about the board depends on a third party's API or pricing.
+  - Recovery burden after a disconnection: **partial**. Catch-up works, but it needs machinery that polling gets for free: replayable revisions in the store, a per-session position in delivery, and reconnect-and-resynchronize logic in the browser. Reconnects after a server restart arrive together, and that herd has to be handled.
+  - Operational load at connection scale: **partial**. Holding 800 connections and fanning out bursts of 20 edits per second is real work, and connections are stateful, so adding capacity means adding instances that share or partition that state. Restarting the server disconnects every browser at once.
+  - Delivery guarantees: **strong**. The server pushes each revision to each watching session in commit order, so ordering and per-session coverage can be enforced directly, and a session's last-seen revision tells the server exactly what that browser needs.
+
+- **Summary:** Pays for the fastest delivery and full control with connection capacity, replayable revisions, and reconnect handling that the project owns.
+
+### Option C — Hosted realtime service
+
+The project publishes committed revisions through a hosted realtime provider's channels and the provider pushes them to subscribed browsers. The provider also carries the socket, its session lifecycle, and its reconnection behavior.
+
+- **Description:** A delivery path where the project keeps only the publishing half. After a revision commits, the project publishes it to a provider channel; the provider fans it out to the browsers subscribed to that channel, and the provider's client SDK handles reconnects and resubscription on the browser side. The project holds provider credentials, provider channel names, and a dependency on the provider's protocol in its browser bundle.
+
+- **Demonstration:** A coordinator commits a stall closure, producing revision 4712. The server publishes 4712 to the provider channel for that market; the provider's SDK in each of the 40 subscribed browsers delivers it in well under a second. The browser SDK handles the dropped connection and resubscription when a laptop sleeps.
+
+- **Analysis:**
+  - No vendor payments: **eliminated**. The hosted service bills for connections and messages, which is a vendor payment the board does not make. This is the gate that removes the option.
+  - One authoritative revision per edit: **passes** — the published payload carries the same event revision.
+  - Update freshness: **strong**. The provider pushes promptly, so arrival is comparable to the self-hosted option and typically well inside a second.
+  - Cost of the delivery path: **weak** against this criterion once the fee is counted — recurring per-connection and per-message charges scale with the board's busiest hours, which are exactly the times the board matters most, and the project has no revenue to offset them.
+  - Vendor coupling: **weak**. The board's delivery behavior, its client bundle, and its ability to change provider depend on a third party's API, pricing, and availability. The board also depends on the provider not being the long pole in recovering a browser's missed revisions.
+  - Recovery burden after a disconnection: **strong**. Reconnect and catch-up are the provider's client SDK's problem, which is the largest single saving in this option.
+  - Operational load at connection scale: **strong**. The provider absorbs connection capacity and bursts; the project publishes revisions and reads its own state.
+  - Delivery guarantees: **partial**. Ordering and delivery are the provider's guarantees, with the project reconciling what it published against what the provider accepted — a publication outbox and reconciliation that this option introduces rather than removes.
+
+- **Summary:** Buys the fastest delivery and the least operational work at the price of a recurring bill and a dependency on a provider's protocol and behavior.
+
+## Selection
+
+**Option B, self-hosted WebSockets, is chosen.**
+
+The hosted realtime service is removed by the *no vendor payments* gate, and polling survives that gate but loses to sockets on update freshness, delivery guarantees, and connection-scale cost of delivery. Among the options that survive the gates, sockets win on the major criteria: freshness is the strongest against polling and comparable to the hosted option, cost carries no recurring bill, and vendor coupling is nil. The tenet *Own the operations over vendor coupling* is the reason the vendor-free option is preferred among the two vendor-free options, and it is the tenet this decision turns on.
+
+The decision commits the project to paying in engineering and operations rather than in fees. The accepted cost is concrete and is the substance of the three downstream nodes: the change store keeps replayable revisions so that a reconnecting browser can be brought up to date; the delivery node owns WebSocket session lifecycle — accepting and authorizing connections, pushing revisions, and tracking each session's last-seen revision; the browser node owns reconnect and resynchronize, and must make a disconnected browser distinguishable from a quiet board, per the tenet *Connectivity failures must be visible, not mistaken for an unchanged board*. Reconnect bursts after a server restart and the horizontal scaling of stateful sessions are the two places where the accepted cost is most likely to be underestimated.
+
+The decision forecloses the hosted option for the pilot, and therefore forecloses the fastest route to delivery with the least operational work. It leaves open whether the polling option is ever preferable for a narrower surface — a single-event read-only view, say — and it leaves open the question of whether the project would take a managed service later if the connection capacity it now owns grew beyond what a volunteer-run project can carry.
+```
+
+**Also changed:** the HLD's "Self-hosted WebSockets for change delivery" decision now ends with a pointer to `docs/decisions/delivery-approach.md`.
+
+Two things I noticed while writing it that you should confirm, plus the standing approvals:
+
+1. **The hosted option is eliminated by a gate, not by a criterion.** I wrote "no vendor payments" as a gate because it's already a standing non-goal, so the hosted service is removed rather than out-scored. If you'd rather it stay in contention (e.g. if the non-goal is negotiable), say so and I'll re-write it as a major criterion instead.
+2. **The tenet I added to the HLD is now load-bearing** — the decision doc turns on *Own the operations over vendor coupling*, and the vendor-coupling criterion is derived from it. If you drop that tenet, the decision doc needs its criterion set reworked.
+3. Still open from before: the second candidate tenet ("prefer a reconnectable, stateful session over a stateless read") and the freshness goal (left at 15s).
+
+Phase 1 is complete and awaiting your sign-off on the HLD; say the word and I'll start Phase 2 on the three nodes (change-store, delivery, browser-sync).

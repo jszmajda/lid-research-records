@@ -1,0 +1,7 @@
+The lookup-backend choice is already captured in `docs/intent/registry/registry-design.md` under Decisions & Alternatives, with the alternatives and rationale tied to the HLD tenets that prohibit runtime network access.
+
+Applying the LID decision-doc heuristic: a decision doc is earned when a cold reader would re-litigate the choice without the competing options and criteria. Here the HLD tenets — “All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted” and “Kiosks have no network route during normal operation” — make the on-site HTTPS directory and managed search service effectively non-viable for the current kiosk constraints. The remaining viable option, local embedded SQLite, is the predictable local alternative that stays inside the registry component.
+
+With the tenets and the rationale recorded in the LLD’s Decisions & Alternatives table, a cold reader can reconstruct why the other options were rejected and why SQLite was selected. That’s a table-row level decision, not a decision-doc level one.
+
+A full decision doc would be overkill unless you want to preserve a detailed, criteria-weighted evaluation — e.g., cost, rebuild time, index size, future search richness trade-offs — for future re-litigation. If you want that depth preserved, I can draft `docs/intent/registry/decisions/registry-lookup-backend.md` and link it from the LLD row. Otherwise the current table entry is sufficient.

@@ -1,0 +1,5 @@
+That would be overkill here — a Decisions & Alternatives row is enough, and that's already in place.
+
+The decision-doc bar is: would a cold reader of the *landed* choice still find it genuinely re-litigable — live, with credible options traded against more than one criterion? Here the HLD already carries a tenet that all lookups must work with no runtime network access. That tenet alone eliminates the HTTPS-directory and managed-search options, since both depend on network/service availability during normal kiosk operation. A cold reader applying that existing constraint lands on SQLite immediately — it reads as obvious in context, even though it took you a few passes to see it that way in the moment.
+
+The row in `registry-design.md` already records the alternatives and why they were trimmed, which is exactly what a fresh author would want on the page. A full decision doc is for cases where no inherited constraint settles it and the tradeoff would stay genuinely open for a future reader — that's not this one.

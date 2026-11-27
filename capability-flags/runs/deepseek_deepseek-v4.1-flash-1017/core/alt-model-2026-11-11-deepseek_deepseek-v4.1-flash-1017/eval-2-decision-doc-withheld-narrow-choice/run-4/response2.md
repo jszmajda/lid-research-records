@@ -1,0 +1,5 @@
+I'd keep it as the Decisions row rather than a full decision doc. The call affects only the previews node—the review API, render queue, HTTP contract, and 12 GiB budget are all unchanged—so no other design node is being sized around it. The row already records 2Q, LRU, aged frequency, and the tradeoff that decided it; a cold reader can reconstruct the choice from that.
+
+A decision doc would earn its place if something outside the preview cache later depends on the queue split or remembered-key behavior. If you still want the three meetings memorialized, say so and I'll add one under `docs/intent/previews/decisions/`.
+
+Either way, I still need your ruling on the three LLD questions—starting split, remembered first-use keys, and scan-only capacity—plus approval of the LLD before I update the EARS.

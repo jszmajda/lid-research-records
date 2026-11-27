@@ -1,0 +1,3 @@
+Overkill — I'd skip it. The HLD's no-network tenet is an inherited gate that already eliminates the on-site HTTPS directory and the managed search service, so a cold reader can re-derive the SQLite pick from that constraint plus the Decisions row; the rule is not to write a doc for a choice an inherited constraint settles, however long the deliberation ran. The row stands on its own.
+
+Leave it as the row and move to Phase 3 (EARS)?

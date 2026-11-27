@@ -1,0 +1,1 @@
+Let me check for additional LID artifacts (arrows overlay, decisions, AGENTS.md, config).

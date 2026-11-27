@@ -1,0 +1,11 @@
+SHEET-MARK-QD (quote-date companion column encoding)
+
+1. Ubiquitous — the column exists and is typed. The Positions view tab SHALL carry a `Quote Date` companion column as the last (13th) column of `POSITIONS_HEADER`, at zero-based index 12, present on every rendered data row (no ragged rows).
+
+2. Ubiquitous — the encoding. For each position row, the `Quote Date` cell SHALL be a live formula (`Cell::Formula`, not an engine value) with the exact text `=IFERROR(TEXT(INT(GOOGLEFINANCE("<ticker>","tradetime")),"0"),"")`, where `<ticker>` is the symbol resolved through `config`'s alias map (`AliasMap::resolve`) — the same resolved ticker used by the row's `Price` formula (e.g. symbol `AMZN` aliased to `NASDAQ:AMZN` renders `NASDAQ:AMZN`). The formula SHALL use the `tradetime` attribute, `INT` truncation to the date serial, and `TEXT(…,"0")` digits-only rendering, so the trade date is stamped from GOOGLEFINANCE's own quote date rather than wall-clock read time and formats identically in every locale (the settle pass reads the tab back through the plain values API, which returns locale-formatted strings).
+
+3. State-driven — while the quote is loading or errored. WHILE the `GOOGLEFINANCE("…","tradetime")` call is unavailable (loading or in error), the `IFERROR` wrapper SHALL render the cell as the empty string, never a sheet-error token.
+
+4. Event-driven — read-back parse. WHEN the settle pass reads a Positions data row whose `Price` cell (column 4) parses as a numeric price, the system SHALL parse column 12's text — trimmed — as a base-10 `i32` day count and stamp the resulting `PriceReading::Numeric` (and thence the `Mark`) with `Date(<that integer>)`.
+
+5. Unwanted-behavior — unparseable / absent quote date. IF the quote-date cell is absent, empty, or does not parse as an `i32` (the loading/errored empty case, or a locale-formatted datetime), THEN the reading SHALL still be `Numeric` with `quote_date = Date(0)` — the price is not rejected and the row is not degraded on quote-date grounds alone; degradation is decided solely by the `Price` cell and by `price_to_cents`.

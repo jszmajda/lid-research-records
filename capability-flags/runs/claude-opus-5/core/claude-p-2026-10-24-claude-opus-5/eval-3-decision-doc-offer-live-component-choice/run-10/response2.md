@@ -1,0 +1,23 @@
+Decision doc written at `docs/intent/record-store/decisions/concurrent-visit-edits.md`, linked from the LLD's Decisions row.
+
+## How it's structured
+
+**Context** frames the decision from the domain — two workers correcting the same visit after comparing notes, a 48-hour offline window, and the fact that the cost of a wrong mechanism is scientific rather than operational: observation date, observer list, cover estimates, and notes are not independent fields, because a revised identification and its cover estimate are one judgment expressed in two places.
+
+**Decision elements** — one gate (every original submission retained and recoverable, from *do not silently discard a submitted edit*, which eliminates last-write-wins) and six weighted criteria. Two majors: unrecognized combination of scientifically related edits (turning on the HLD's *inference of scientific intent* non-goal) and ongoing maintenance burden of the reconciliation logic (turning on the two-coordinators-no-administrator tenet). Four moderates/minor: review volume, export completeness, inspectability, tablet footprint.
+
+**Why we'd still consider merging.** Two places carry it. In *Options*, field-aware merge is written as its advocate would write it — most concurrency on this team is disjoint, so the common case clears itself, the queue stays small, the Friday file stays full — and it scores **strong** on review volume and export completeness, where whole-visit revisions score **weak**. I also surfaced a criterion that hadn't been named in your options sketch and that cuts against the selection: **completeness of the Friday export**. Because unresolved visits are held out of the CSV, review volume isn't only coordinator time — it's rows the science partner doesn't receive that week.
+
+Then *Selection* says plainly that the choice is made against those two criteria, and names what would reopen it: if the unresolved backlog becomes the binding constraint on the export, the thing to revisit is not general merge but a narrow whitelist — observer-name spelling, appended notes — with anything touching identification or cover estimates still producing competing revisions, implementable as a server-authored resolution behind the revision model. The asymmetry is recorded: choosing revisions now doesn't foreclose that, choosing merge now would foreclose the related-edit guarantee.
+
+**What tablet and export work must accommodate** is a closing section, framed as cascades the decision creates rather than as work owned by record-store:
+
+- **tablet-sync**: a base revision ID per draft, no base snapshot and no change computation, whole field set on submit, and three outcomes distinguished to the worker — with accepted-but-now-competing called out as the load-bearing one, since it is a *successful* submission needing coordinator attention and must read as neither a retry-able failure nor a plain success. Drafts can start from a competing revision, so the local model can't assume one server-side state per visit.
+- **review-export**: a comparison view over competing revisions with authors and receipt times, the resolution operation including its stale-set rejection, eligibility restricted to resolved visits, and explanation-by-revision rather than field-level provenance. Correcting an already-resolved visit is flagged open and assigned to that node.
+
+## Still open from the Phase 2 stop
+
+1. **The probe gap triage** — I haven't folded any of it into the LLD yet, since you didn't rule on it. My recommendation stands: fix the five contract-level gaps (resolution idempotency key; whether `supersedes` counts as ancestry for the last agreed revision; an atomicity rule for outcome determination; *compete* being overloaded for branch follow-up edits; resolution's rejection shapes and the coordinator role check), probably fix two more (idempotent-replay return value and key scope; whether resolutions are validated like submissions), defer three.
+2. **`site-catalog-design.md`'s closing line** — "Tablet-sync's visit submission and reconciliation behavior remains pending that choice" is now stale. Across a segment boundary, so still untouched. Update it?
+
+Once you rule on those, Phase 3 takes `record-store-specs.md`: REC-004/005/006 retextured off their policy-agnostic wording, plus new specs for the four acceptance outcomes, both retrieval shapes, and resolution with its stale-set rejection.

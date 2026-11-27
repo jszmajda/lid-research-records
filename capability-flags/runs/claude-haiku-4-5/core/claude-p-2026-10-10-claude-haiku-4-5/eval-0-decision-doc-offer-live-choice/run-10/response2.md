@@ -1,0 +1,3 @@
+Decision doc written. It lays out the three options (polling, self-hosted WebSockets, hosted realtime) with their analysis against latency, operational complexity, cost, and vendor coupling — showing why WebSockets wins on independence and latency, at the cost of owning reconnect logic.
+
+The HLD now links to it. Ready to move to Phase 2 and sketch the three leaf LLDs: Change Store, Delivery, and Browser Sync?

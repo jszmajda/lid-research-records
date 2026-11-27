@@ -1,0 +1,98 @@
+diff --git a/docs/intent/previews/decisions/cache-eviction-policy.md b/docs/intent/previews/decisions/cache-eviction-policy.md
+new file mode 100644
+index 0000000..139a864
+--- /dev/null
++++ b/docs/intent/previews/decisions/cache-eviction-policy.md
+@@ -0,0 +1,59 @@
++---
++node: previews
++---
++
++# Decision: Preview cache eviction policy
++
++## Context
++
++The preview worker keeps a private cache of rendered JPEG contact sheets bounded at 12 GiB on one eight-core machine during the pilot. Editors alternate two access shapes against this cache: long sequential screenings that touch many clips once, and repeated comparisons of a small working set of clips. The mix varies by production. When the cache is full, the worker must choose which sheet to evict to admit a newly rendered one, and that choice decides whether a long one-pass screening displaces the working set an editor is actively comparing.
++
++Every candidate below renders the same sheets, honors the same 12 GiB budget on one worker, keeps all replacement state private to the worker, and serves the same ready/pending/unknown contract regardless of policy. Those are fixed invariants, so they do not discriminate between the options; what follows are the considerations that do.
++
++## Decision Elements
++
++- **Scan resistance for the comparison working set** *(major)* — how well the policy keeps a small, repeatedly-accessed working set resident while a long sequential screening streams many one-use sheets through the cache. This is the workload's defining tension and the criterion the choice turns on: the design leans toward retaining the reused comparison set over one-pass screening sheets.
++- **Adaptation when an editor switches projects** *(moderate)* — how quickly the resident set follows a shift to a new working set, since the mix and subject change by production.
++- **Bookkeeping and maintenance cost** *(moderate)* — per-access and background work the policy adds on one eight-core worker serving 24 editors.
++- **Tuning burden** *(minor)* — how many parameters must be set and maintained for the policy to behave well.
++
++## Options in the Domain
++
++### LRU
++
++**Description.** Evict the least-recently-used resident sheet. A single recency list; each access moves its entry to the front, eviction takes the tail.
++
++- **Scan resistance:** weak. A screening longer than the cache walks the entire working set to the tail and evicts it, because every scanned sheet looks as recent as a compared one.
++- **Adaptation:** strong. The resident set is exactly the most recent accesses, so a project switch is followed within one working set's worth of requests.
++- **Bookkeeping:** strong. One list, one move per access, no background work.
++- **Tuning:** strong. No parameters beyond the byte budget.
++
++**Summary.** Cheapest and most responsive, but a long screening evicts the comparison set.
++
++### Frequency-based eviction with aging
++
++**Description.** Evict the sheet with the lowest access-frequency count, where counts decay over time so that once-popular sheets eventually fall out. Each entry carries a counter; a background or amortized aging pass decays counts.
++
++- **Scan resistance:** partial. One-use scan sheets accumulate low counts and are preferred for eviction, protecting repeatedly-viewed sheets — but a sheet must be accessed enough times to build a defensible count before it is protected.
++- **Adaptation:** weak. Yesterday's high counts keep a previous project's working set resident until aging decays it, lagging a switch.
++- **Bookkeeping:** weak. Per-entry counters plus a recurring aging pass add sustained work on the single worker.
++- **Tuning:** partial. The aging rate and decay shape must be chosen and maintained.
++
++**Summary.** Best retention of durably-popular sheets, at the cost of counter upkeep and slow adaptation.
++
++### 2Q
++
++**Description.** Separate first-use entries from reused entries. A newly rendered sheet enters a FIFO first-use list (A1in). Only a sheet accessed a second time — recognized by a ghost list (A1out) of recently evicted first-use keys — is admitted to an LRU reused list (Am). A sheet earns a place in the protected reused set only by being accessed again after a first-use eviction, so a one-pass scan never reaches it.
++
++- **Scan resistance:** strong. First-use scan sheets flow through A1in and out without ever entering Am, so a screening cannot evict the reused working set.
++- **Adaptation:** partial. A new project's sheets enter as first-use and are promoted to the reused set on their second access, a short lag behind pure recency.
++- **Bookkeeping:** partial. Two resident lists plus a byte-free ghost list and per-access list maintenance — more than LRU, but no counters and no background aging pass.
++- **Tuning:** partial. Two parameters: the budget share for the first-use list and the ghost-list size.
++
++**Summary.** Protects the reused comparison set from screening scans, at the cost of a second queue, a ghost list, and two size parameters.
++
++## Selection
++
++**2Q.** The major criterion is scan resistance for the comparison working set, and 2Q is the only option that fits it strongly: admitting a sheet to the protected reused set requires a second access, which a one-pass screening never produces, so a long screening cannot displace the set an editor is comparing. LRU fails exactly this case, and aged frequency protects popular sheets only after they accrue counts and then clings to a previous project's set. The costs 2Q carries fall on the moderate and minor criteria the pilot accepts: more per-access bookkeeping than LRU (but no counters or aging pass), a short promotion lag on a project switch, and two size parameters (the first-use budget share and the ghost-list size) to tune.
++
++The decision turns on the lean toward **retaining the reused comparison set over one-pass screening sheets**. Committing to 2Q obligates the worker to maintain the two resident lists and the ghost list as private bookkeeping, and obligates tuning of the two size parameters per the deferred open question in the LLD. It forecloses nothing in the external contract, the budget, or the single-worker deployment, all of which are identical across the options.
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..ae0afc6 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,27 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Eviction: 2Q
++
++The cache admits sheets through a 2Q replacement policy, which separates first-use entries from reused entries so a long sequential screening cannot evict the smaller working set an editor is comparing against. Three structures hold this split; all are private worker bookkeeping, and none changes the external interface, render-queue concurrency, or the 12 GiB disk budget.
++
++- **A1in** — a FIFO list of first-use resident sheets. A newly rendered sheet whose key is not remembered in A1out is admitted here. A hit on an A1in entry is served from it but does not move the entry; recency alone does not promote a first-use sheet.
++- **Am** — an LRU list of reused resident sheets. A sheet is admitted here only when its key is found in A1out at render time. A hit on an Am entry moves it to the Am most-recently-used position.
++- **A1out** — a ghost list of recently evicted A1in keys, holding clip ID, revision, and renderer version only — no JPEG bytes. Its purpose is to recognize a second access to a sheet that a scan already pushed out of A1in, which is what admits that sheet to Am.
++
++Resident JPEG bytes in A1in and Am together stay within the 12 GiB budget. The budget is split by a tunable share **Kin**: A1in holds up to Kin of the budget, Am holds the remainder. A1out holds up to a tunable count **Kout** of ghost keys and is bounded by key count, not bytes, since it stores no image data.
++
++**Admission and eviction.** When a completed sheet is admitted, if its key is present in A1out, the sheet enters Am (as MRU) and that ghost key is removed; otherwise it enters A1in (as the FIFO head). Before admission, the worker evicts to stay within 12 GiB: while A1in's resident bytes exceed its Kin share, it evicts A1in's FIFO tail, recording that tail's key in A1out (dropping A1out's oldest ghost key if A1out is at Kout); otherwise it evicts Am's LRU tail, which is forgotten entirely and leaves no ghost key.
++
++The cache key remains clip ID, revision, and renderer version, as in rendering and deduplication above. Because keys are immutable, a ghost key in A1out always refers to the same source; a superseded revision or a new renderer version is simply a different key and ages out of A1out by count.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (A1in FIFO, Am LRU, A1out ghost keys) | LRU; frequency-based eviction with aging | Editors alternate long sequential screenings with repeated comparison of a small working set; 2Q admits a sheet to the reused queue only on a second access, so a one-pass screening scan cannot evict the comparison set. LRU is cheaper but a long scan evicts the working set; aged frequency counts protect popular clips but add counter maintenance and lag a project switch. The accepted cost is two resident queues plus a ghost list and the Kin/Kout tuning parameters. Full options and criteria: [decisions/cache-eviction-policy.md](decisions/cache-eviction-policy.md). |
++
++## Open Questions & Future Decisions
++
++### Deferred
++1. Initial values for Kin (A1in's share of the 12 GiB budget) and Kout (ghost-key count), and whether they are tuned per production. The policy is correct for any split; the values set how aggressively first-use sheets are protected.

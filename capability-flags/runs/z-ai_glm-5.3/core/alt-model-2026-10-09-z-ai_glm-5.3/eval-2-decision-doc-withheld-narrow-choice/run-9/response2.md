@@ -1,0 +1,5 @@
+Written: `docs/intent/previews/decisions/eviction-policy.md`, linked from the LLD's Decisions & Alternatives row.
+
+Two notes on how it's built, per the template: it's written cold — present tense, options described as they exist in the domain, no narration of the meetings or the thread, so it stands on its own as the durable record — and it carries no spec IDs (decision docs own none). The criteria are the four that actually discriminate: scan resistance and project-switch adaptation (major), bookkeeping cost and tuning burden (moderate); the 12 GiB bound and fixed interface are background, since every candidate passes them by construction.
+
+Please review the doc — particularly whether the Selection section names the trade you'd want a future reader to see — and the two open judgment points from before (split default, co-waiter promotion) still await your ruling before tests-first starts.

@@ -1,0 +1,56 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..fb0c223 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using 2Q eviction.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..076f43a 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,37 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### 2Q Replacement
++
++The cache uses two resident queues with separate replacement behavior:
++
++- **A1in** is a FIFO probationary queue for sheets admitted after a miss. Its target is 25% of the cache budget (3 GiB), measured in cached JPEG bytes rather than entry count.
++- **Am** is an LRU protected queue for sheets requested again while resident in A1in. It may use any capacity not needed by A1in, up to the total cache budget.
++
++A key-indexed entry map supports cache lookup, while each queue maintains its own ordering metadata. Queue membership and cached-byte accounting are private to the worker. Lookup, promotion, admission, and eviction update that metadata atomically with respect to other cache operations.
++
++On a hit in A1in, remove the entry from A1in and insert it at Am's most-recently-used end. On a hit in Am, move the entry to Am's most-recently-used end. Neither hit changes the cached-byte total or admits another copy.
++
++On a miss, admit the successfully rendered sheet once at A1in's tail. Repeat the following eviction choice until the total cached data plus the incoming sheet fits within 12 GiB:
++
++1. If A1in occupies at least 3 GiB, evict its oldest entry.
++2. Otherwise, if Am is nonempty, evict Am's least-recently-used entry.
++3. Otherwise, evict A1in's oldest entry.
++
++This makes the A1in target a soft partition: unused probationary capacity is available to protected sheets, while a sustained screening scan displaces probationary entries before the established comparison working set. A sheet evicted before a second request has no residual replacement state; if rendered again, it enters A1in as a new admission. No access-frequency counters or nonresident history queue are retained.
++
++The 3 GiB A1in target is worker-private configuration and can be tuned from pilot workload measurements without changing the preview API, render queue, or total disk budget.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|-------------------------|-----------|
++| Cache replacement | Two resident 2Q queues: probationary FIFO (A1in) and protected LRU (Am) | Single LRU; frequency-based eviction with aging; 2Q with nonresident history | Repeatedly used comparison sheets survive one-off screening scans without maintaining frequency counters or a third history structure. |
++| Queue sizing | Soft byte-based A1in target of 25%, initially 3 GiB | Fixed entry counts; equal split; hard partition | Sheet sizes can vary, and a soft target lets Am use otherwise idle capacity while retaining a tunable scan-resistance control. |
++| Replacement scope | Entirely inside the preview worker | API-visible cache controls; render-queue participation | Replacement bookkeeping remains an implementation detail, and pending or ready response semantics stay independent of eviction. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Tune the A1in byte target using measured scan length, comparison working-set size, and hit rates during the pilot.

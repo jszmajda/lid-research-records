@@ -1,0 +1,11 @@
+Overkill — I'd not write one. Here's the reasoning and what I changed.
+
+**The backend choice doesn't clear the bar.** The test is from the landed state: would a cold reader find it non-obvious and want to reverse it? The HLD tenet "All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted" already eliminates the on-site HTTPS directory and the managed search service. So a reader doesn't need the competing options and criteria to reconstruct the choice — the architecture forecloses them. A row that names the tenet settles it; a decision doc would restate what the tenet already says.
+
+That also explains why the debate felt closer than the choice was: two of the three options in the sketch were never eligible under the current HLD. The registry LLD had listed remote backends as candidates while the HLD tenet ruled them out — a cross-node contradiction I hadn't caught. I've now named the tenet in the row so the linkage is visible rather than something a reader has to infer.
+
+**One thing I did add.** Splitting the choice apart surfaced a second decision that was hidden inside it: who builds the index. Each kiosk rebuilding from the snapshot vs. the central inventory team shipping a prebuilt index on the USB. That's now its own row, because it's the part a reader will actually ask about — "why does every kiosk rebuild 90,000 records when the team that produced the snapshot could ship the index too?" — and the answer turns on the signature trust boundary, USB media size, and coupling the index format to the snapshot schema version.
+
+That sub-decision still doesn't earn a doc by the same rule: its substance lives entirely inside the registry node, the certificate interface is unaffected, and the row carries the rationale. If it ever stops being node-local — say the central team's snapshot production joins the arrow as its own node — it graduates to `docs/intent/registry/decisions/index-construction.md` then.
+
+Still open from before: the error-shape fork (two-variant interface + thrown error vs. a third `Unavailable` variant that would ripple into `CERT-001`/`CERT-002`), the triage table, and #11 (whether an older snapshot may replace a newer active one). Say the word on those and I'll write the Phase 3 specs.

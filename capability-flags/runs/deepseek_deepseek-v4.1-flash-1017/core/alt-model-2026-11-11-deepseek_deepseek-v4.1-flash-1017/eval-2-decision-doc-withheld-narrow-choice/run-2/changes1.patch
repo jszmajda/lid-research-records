@@ -1,0 +1,66 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..e022a53 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using 2Q eviction to protect reused comparison sheets from one-off screening scans.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..b4d0d6c 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -17,10 +17,46 @@ Use a FIFO render queue with at most four active rendering jobs. Cache entries a
+ 
+ ## Rendering and Deduplication
+ 
+-Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry.
++Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. A completed job keeps its deduplication entry until its sheet is admitted or rejected from the cache, so a request cannot start a second render in the admission window. Failed jobs are removed from the deduplication map so a later request can retry.
+ 
+ ## Private Cache
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### Eviction Policy: 2Q
++
++The cache uses 2Q eviction, which separates first-use sheets from sheets that have demonstrated reuse. A long one-off screening therefore fills only the first-use queue and cannot displace the comparison sheets held in the reuse queue.
++
++Resident sheets occupy one of two queues:
++
++| Queue | Contents | Order | Budget |
++|-------|----------|-------|--------|
++| `A1in` | Sheets admitted on first use | FIFO | 3 GiB (25% of the JPEG budget) |
++| `Am` | Sheets requested again while resident, or requested while their key is in the ghost queue | LRU | 9 GiB |
++
++`A1out` is a metadata-only FIFO ghost queue. When `A1in` evicts a sheet, its key is appended to `A1out` and the JPEG data is discarded. `A1out` holds at most the number of keys nominally fitting in `A1in` at 2 MiB per sheet (1,536 keys); when full, the oldest key drops. Ghost keys are replacement bookkeeping, not cached JPEG data, and do not count against the 12 GiB bound.
++
++Requests update the queues as follows:
++
++- A key resident in `Am` moves to the most-recent end of `Am`.
++- A key resident in `A1in` is promoted to the most-recent end of `Am`.
++- A key absent from both queues but present in `A1out` is a cache miss: the worker renders the sheet and, on successful completion, removes the key from `A1out` and admits the completed sheet directly to the most-recent end of `Am`. If rendering fails, the key remains in `A1out`.
++- A key absent from all queues is a cache miss: the worker renders the sheet and admits it to the tail of `A1in`.
++
++Each key has at most one membership among `A1in`, `Am`, and `A1out`; every transition removes the prior membership. Queue mutations are serialized, so concurrent completions cannot jointly exceed the queue or total budgets.
++
++When an admission or promotion would exceed a queue's budget, the worker evicts entries from that queue until it is within budget: `A1in` evicts its oldest entry first, appending each evicted key to `A1out`; `Am` evicts its least-recently-used entry first, leaving no ghost entry. A completed sheet larger than the `A1in` budget is admitted directly to `Am` so it cannot immediately evict itself; a completed sheet larger than the 12 GiB JPEG bound is returned to the requester but not cached. An entry with a response in flight is not evicted until that response completes. The two queue budgets sum to the 12 GiB JPEG bound, so changing the split never changes the total cache size.
++
++Eviction decisions read only the preview key and queue position. They do not read clip content, project identity, or request-source metadata. A resident key whose JPEG file is missing or unreadable is treated as a cache miss and removed from its queue.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q: a 3 GiB FIFO first-use queue, a 9 GiB LRU reuse queue, and a metadata-only ghost queue | LRU; frequency-based eviction with aging | 2Q keeps one-off screening sheets in the small first-use queue, so they cannot displace comparison sheets that accumulate in the reuse queue. The extra queues and split bookkeeping remain private to the preview worker and leave the HTTP contract and render queue unchanged. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Tune the `A1in`/`Am` split, starting at 25% of the JPEG budget, against the production mix of screenings and comparisons. The split changes only queue budgets within the fixed 12 GiB cache.

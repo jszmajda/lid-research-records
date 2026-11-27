@@ -1,0 +1,9 @@
+It would be overkill — the row in `registry-design.md`'s `Decisions & Alternatives` table is the right fit here.
+
+A standalone decision doc earns its place judging from the **landed design**, not how much back-and-forth it took to get there: would a cold reader find the choice non-obvious and be tempted to re-litigate it without full multi-criterion analysis? Here, three things settle it in a single table row:
+
+1. **Inherited HLD constraints eliminate the networked alternatives.** `docs/high-level-design.md` forbids runtime network access, states kiosks have no network route during normal operation, and lists remote/cloud services as non-goals. Against those standing gates, an on-site HTTPS directory and a managed search service are ruled out up front rather than staying live trade-offs.
+2. **The impact stays inside one node.** Index construction, storage, and query execution are completely private to `registry`; `certificates` consumes the unchanged `findBySerial(serial)` contract, so no sibling components are sized around this choice.
+3. **One line of rationale settles the local comparison.** For a cold reader wondering why SQLite over scanning raw NDJSON or holding all 90,000 records in RAM, the existing row captures it directly (sub-250 ms indexed point lookups with bounded memory on a 4 GB kiosk for 150 MB snapshots).
+
+If you still want `docs/intent/registry/decisions/lookup-backend.md` anyway, I can write it (at the cost of an extra doc carrying a choice the HLD already constrains); otherwise, keeping the `Decisions & Alternatives` row is cleaner, and we can pick up with your triage of the six Phase 2 edge cases above whenever you're ready.

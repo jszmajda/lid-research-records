@@ -1,0 +1,3 @@
+{scratch}/audit-baseline/crates/runtime/src/adapters.rs (lines 248–275: `read_price_pass` settle implementation)
+{scratch}/audit-baseline/crates/sheets-view/src/lib.rs (lines 522–599: `render_positions` formula generation; lines 817–887: `read_marks` settle loop with prior carry-forward)
+{scratch}/audit-baseline/crates/sheets-view/tests/formula.rs (lines 68–107: row-anchor test; lines 146–202: numeric-percent test; lines 205–271: quote-date companion test)

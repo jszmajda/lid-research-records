@@ -1,0 +1,30 @@
+**Solid upstream design; one unrecorded tenet trade-off and downstream phases still ahead.**
+
+**Scorecard**
+- ✓ HLD & LLD clarity — crisp problem framing, concrete component boundaries, and well-reasoned decisions in `pickup-notices`
+- ⚠ Tenet cascade — local-branch priority in `hold-allocation` pulls against the HLD's strict-sequence tenet without a recorded exception
+- ⚠ Decision capture — the scanning-branch preference in `hold-allocation` lives only in body prose rather than in `Decisions & Alternatives`
+- ✗ Arrow completeness — specs are marked `[x]` across both components, but tests and implementation code are not yet present in the repo
+- ⚠ Configuration — `CLAUDE.md` carries the `## LID` mode block but is missing the standard `linked-intent-dev` workflow directives
+
+The HLD and both component designs are remarkably clean, readable cold, and tightly scoped around library circulation events; the highest-leverage next step is reconciling the scanning-branch allocation rule with the HLD's first tenet (and capturing that trade-off in `hold-allocation-design.md`'s decisions table) before building out tests and code.
+
+**Findings (6 total · 3 high · 2 medium · 1 low)**
+- **F1 (high):** Scanning-branch priority in `docs/intent/hold-allocation/hold-allocation-design.md` (and `HOLDALLOC-003` / `HOLDALLOC-004`) gives a checked-in copy to a local patron over an earlier-requesting patron at another branch, pulling against the HLD tenet *"Waiting is honored in sequence"* ("nobody's wait is lengthened by a patron who asked after them") with no recorded exception; consider aligning the rule, recording the exception, or refining the tenet · *tenets capture forward-looking preference* and *coherence is adjacency* (each level of the arrow leans the way upstream tenets and goals say to lean, or explicitly records the trade-off)
+- **F2 (high):** Preferring scanning-branch holds over strict county-wide FIFO order to keep copies off the daily courier van is stated in `docs/intent/hold-allocation/hold-allocation-design.md` prose (§Design, line 11) with no row in `## Decisions & Alternatives`; consider capturing the rejected alternative and accepted cost in the table · *docs carry current intent, written to be read cold* (decisions that a cold reader would question or weigh against an HLD tenet belong in `Decisions & Alternatives` with their rejected option and accepted cost)
+- **F3 (high):** All 13 EARS specs across `hold-allocation-specs.md` and `pickup-notices-specs.md` are checked `[x]`, while the `Tests` and `Code` phases of the arrow do not yet exist in the repository; consider walking the specs through tests-first implementation or keeping spec checkboxes unchecked until tests and code land · *canonical arrow shape* and *tests before code* (the arrow runs `HLD → LLDs → EARS → Tests → Code`, with tests and `@spec`-linked entry points completing the chain)
+- **F4 (medium):** `CLAUDE.md` declares `## LID` (`Mode: Full`, `Version: 1.4.0`) without the standard Linked-Intent Development workflow directives instructing agents how to walk the phases; try running `/update-lid` to reconcile the instruction file · *modes are declared, not inferred* (the instruction file anchors both mode configuration and the workflow rules that keep cascades consistent across sessions)
+- **F5 (medium):** `docs/intent/hold-allocation/hold-allocation-design.md` covers cancelling an in-transit hold (`HOLDALLOC-007`), whereas `pickup-notices-specs.md` (`PICKUP-003`, `PICKUP-005`) explicitly deletes closed hold records per the HLD tenet *"Hold history is not kept"*; consider specifying record deletion (and holds-shelf pull behavior) when a patron cancels a hold in any state · *LLDs close enough of the solution space* (closing behavioral edges in the LLD and specs keeps future sessions from guessing how cancellation interacts with data retention)
+- **F6 (low):** The four tenets in `docs/high-level-design.md` (`## Tenets`) are rendered as an unordered bullet list even though they can pull against one another in practice (for example, operational automation vs. strict queue sequence), and *"Hold history is not kept"* ("A closed hold's record is deleted") reads partly as a triggered rule; consider numbering the tenets in priority order and phrasing each purely as a tie-breaker · *tenets capture forward-looking preference* (ordered tie-breakers tell future sessions which tenet wins when two defensible choices conflict)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/hold-allocation/hold-allocation-design.md`, `docs/intent/hold-allocation/hold-allocation-specs.md`, `docs/intent/pickup-notices/pickup-notices-design.md`, `docs/intent/pickup-notices/pickup-notices-specs.md`
+- Enumerated: 1 HLD, 2 LLDs, 2 spec files (13 EARS specs total: `HOLDALLOC-001`–`007`, `PICKUP-001`–`006`), 0 arrow-maintenance overlay files (`docs/arrows/` absent), 0 test files, 0 implementation code files
+- Cold-read and decisions-table sweep: completed across all 5 LID docs and all 7 rows across both `Decisions & Alternatives` tables
+- Linkage metric: 13 unique spec IDs defined; 0 `@spec` references in tests or code
+
+Want me to walk through the findings in detail, focus on a theme or priority, or work through specific items together (such as the options for resolving F1 and F2)? You can also pick a specific finding to dig into.
+
+If you have broader questions about using LID for your project — multi-repo setups, where PRDs fit, mode transitions, or what to do when a segment grows too large — I can help with those too.
+
+*(Non-interactive run note — defaults taken: no interactive dispatch prompts were triggered because `CLAUDE.md` explicitly declares `Mode: Full` and no corrupt overlay exists; per `lid-coach`'s default advisory posture, produced the inline report and stopped without modifying project files.)*

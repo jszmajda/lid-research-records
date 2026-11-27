@@ -1,0 +1,3 @@
+I would keep it as a row in the previews LLD’s Decisions & Alternatives table, not a standalone decision doc.
+
+The choice has credible tradeoffs, but it affects only the private preview-cache segment and leaves the public API, render queue, and other nodes unchanged. A cold reader can reconstruct the decision from a concise LLD row; the length of the discussion alone does not make a separate artifact necessary.

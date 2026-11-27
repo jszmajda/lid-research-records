@@ -1,0 +1,62 @@
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..d0290e1 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. Both mixes occur in the same week, often on the same worker, so cache replacement has to survive a screening pass without discarding the sheets an editor is comparing.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,47 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement
++
++Replacement is 2Q. The cache is split into two resident queues plus one non-resident queue of keys:
++
++- **First-use queue** — FIFO. Every newly rendered sheet with no reuse history is admitted here. Holds JPEG bytes.
++- **Reuse queue** — LRU. Holds sheets with demonstrated reuse. Holds JPEG bytes.
++- **Ghost queue** — FIFO of cache *keys* only, no bytes. Records sheets recently evicted from the first-use queue, so a later request for one of them is recognizable as reuse.
++
++The 12 GiB budget covers the first-use and reuse queues together. The first-use queue is additionally capped at its own byte share of that budget; the reuse queue uses whatever remains. The ghost queue is bounded by key count and consumes no part of the JPEG budget.
++
++**On a request.** A hit in the reuse queue serves the sheet and moves it to the MRU end. A hit in the first-use queue serves the sheet and leaves its FIFO position unchanged — a screening pass that touches thousands of sheets once cannot promote any of them, which is what keeps the reuse queue intact during a screening. A key found in the ghost queue is a miss that still carries reuse evidence: the sheet is re-rendered and admitted to the reuse queue, and the ghost entry is dropped. A key found nowhere is an ordinary miss.
++
++**On admission.** Admit at the queue the request determined (first-use queue by default, reuse queue on a ghost hit), then evict until both the 12 GiB total and the first-use queue's share hold. Evict the first-use queue's FIFO tail while that queue is over its share, recording each evicted key in the ghost queue; otherwise evict the reuse queue's LRU tail, which is dropped outright and gets no ghost entry. Ghost keys are themselves evicted FIFO once the ghost bound is reached.
++
++Because the cache key includes renderer version, reuse evidence does not survive a renderer upgrade: sheets re-rendered under a new version enter as first-use. Reuse is a property of a specific rendered artifact, not of a clip.
++
++All of this is internal to the worker. The queue split, the ghost queue, and promotion are not observable through the HTTP contract, and they change neither render-queue concurrency nor the disk budget.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q | LRU; frequency-based eviction with aging | A screening pass touches thousands of sheets once each and would evict an LRU cache's entire comparison working set. 2Q confines single-use sheets to the first-use queue, leaving the reuse queue for sheets editors return to. The cost — two resident queues, a ghost queue, and a byte-share parameter to tune — is accepted in exchange for that protection. Aged frequency counts also resist scans but carry per-entry counter maintenance and lag a project switch. |
++| Promotion requires a ghost hit, not a second access | A sheet reaches the reuse queue only when its key is requested again after leaving the first-use queue | Promote on any second access while still in the first-use queue | Promotion on a second access lets a scan that revisits sheets within one pass fill the reuse queue, which is the behavior 2Q exists to prevent. The cost is a lag: a comparison sheet is protected only from its first post-eviction request onward. |
++| Budget accounted in bytes, not entries | Both resident queues and the total bound are measured in bytes | Fixed entry counts per queue | Sheet size varies around a 2 MiB typical, and the 12 GiB limit is a byte limit; entry counts could not hold it. |
++| Reuse evidence keyed per rendered artifact | Ghost keys include renderer version | Ghost keys on clip revision alone, surviving renderer upgrades | Carrying reuse credit across a renderer upgrade would promote sheets whose bytes were never served, and the cache key is already version-scoped. A renderer upgrade therefore costs one pass of re-warming. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Replacement policy is 2Q, chosen to protect reused comparison sheets from screening scans.
++
++### Deferred
++
++1. First-use queue byte share and ghost queue bound — starting values to be set, then tuned against pilot traffic.
++2. Admission of a sheet larger than the first-use queue's whole share.
++3. Whether cache state survives a worker restart, and which queue on-disk sheets re-enter.
++
++## References
++
++- `docs/high-level-design.md`
++- `docs/intent/previews/previews-specs.md`
++- `docs/intent/review-api/review-api-design.md`

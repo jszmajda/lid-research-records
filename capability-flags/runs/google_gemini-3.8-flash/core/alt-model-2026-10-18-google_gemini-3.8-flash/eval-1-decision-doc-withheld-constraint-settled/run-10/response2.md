@@ -1,0 +1,1 @@
+It would be overkill. An inherited constraint already settles it (the HLD tenet prohibiting kiosk runtime network access eliminates the remote options), and the choice affects only the registry component without changing the certificate interface. The row in the Decisions & Alternatives table is the right level of capture.

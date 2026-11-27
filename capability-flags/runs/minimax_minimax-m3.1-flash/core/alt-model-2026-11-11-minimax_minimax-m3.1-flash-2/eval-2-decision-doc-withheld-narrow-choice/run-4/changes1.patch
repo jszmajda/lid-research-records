@@ -1,0 +1,105 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..e7257c5 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. The cache is replaced by a two-queue policy that separates one-off sheets from repeatedly revisited ones.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..afab920 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The replacement policy has to keep comparison sheets warm while a screening scan sweeps through thousands of one-off sheets.
+ 
+ ## Architecture
+ 
+@@ -21,6 +21,53 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. A sheet is admitted only after enough sheets have been evicted to make room for it, so the cache never exceeds that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement Policy
++
++The cache is managed by a two-queue (2Q) replacement policy. Every cached sheet lives in exactly one of two queues, and each queue has its own byte budget:
++
++| Queue | Holds | Order | Byte budget | Typical sheet count |
++|---|---|---|---|---|
++| First-use queue | Sheets that have been requested once | Earliest admitted first | 2.5 GiB | ~1,280 |
++| Reused queue | Sheets that have been requested more than once | Least recently served first | 9.5 GiB | ~4,860 |
++
++The two budgets sum to the 12 GiB cache limit, so keeping each queue within its budget keeps the cache within the limit. The counts assume the typical 2 MiB sheet and move with measured sheet sizes. Budgets are measured in JPEG bytes rather than entry counts, because sheet sizes vary and the cache limit is stated in bytes.
++
++**Admission.** A newly rendered sheet enters the first-use queue. If admitting it would push the first-use queue past its budget, the sheets admitted earliest are evicted until the queue's total bytes, including the new sheet, are within the budget.
++
++**Requests.** A request served from the cache is a request for that sheet. The request that causes a sheet to be rendered is one request for that sheet, counted when the sheet is admitted. A request that collects a sheet rendered in response to itself — including a request that presents the job ticket issued for that render — is that same request, not a new one. Any later request for the same sheet is a second request.
++
++**Promotion.** A sheet served from the first-use queue by a request other than the one that caused its render has now been requested twice, so it moves into the reused queue and becomes that queue's most recently used sheet. A sheet served from the reused queue becomes that queue's most recently used sheet, whoever the serving request is.
++
++**Eviction.** When a sheet moves into the reused queue and would push that queue past its budget, the sheets served least recently are evicted until the queue's total bytes, including the moved sheet, are within the budget. Each queue's budget is enforced independently, and the two budgets sum to the cache limit, so keeping both queues within budget keeps the cache within its limit.
++
++**Oversized sheets.** A newly rendered sheet whose JPEG data exceeds the first-use queue's byte budget is served to the requesting client but not added to the cache. At the typical sheet size this does not arise; it keeps a pathologically large sheet from displacing reused sheets.
++
++**Concurrency.** Queue bookkeeping — promotion, recency order, and eviction — is performed under a single lock, so concurrent requests for the same sheet promote it once.
++
++Evicted sheets have their cached JPEG data deleted; source footage is never touched. Queue membership, recency order, and counters are private to the worker, and the review API cannot observe them. The replacement policy never changes the request outcomes: a cached sheet still answers 200, an uncached one still answers 202 with a job ticket.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Cache replacement policy | Two-queue (2Q): a first-use queue ordered by admission and a reused queue ordered by reference, each with its own byte budget inside the 12 GiB limit | Whole-cache LRU; frequency-based eviction with aging | A long sequential screening evicts repeatedly revisited comparison sheets under whole-cache LRU, because every sheet scanned becomes the most recent one. Aged frequency counts retain a project's favourites past the point of usefulness and add counter maintenance to every hit. Splitting the budget confines a scan's evictions to the first-use queue and gives reused sheets a protected budget of their own. |
++| Accounting for queue budgets | Byte budgets per queue | Entry-count limits with a byte limit checked separately | The cache limit is a byte limit and sheet sizes vary, so entry counts do not bound the bytes reliably. |
++| What counts as a second request | The request that causes a sheet to be rendered counts once; only a later, independent request for the same sheet is a second request | Counting the delivery of a freshly rendered sheet as a second request | Under the latter reading every sheet an editor screens is requested twice the moment it is delivered, so every screened clip is promoted into the reused queue and the first-use queue never holds the one-off sheets it exists to hold. Treating the render's own delivery as the request that caused it keeps the reused queue reserved for sheets editors come back to. |
++| Evicting from the reused queue | Drop the least recently used sheet | 2Q variants that demote the evicted sheet back into the first-use queue | Demotion keeps the evicted sheet in the cache, so it frees no bytes for the admission that triggered the eviction. With byte budgets, dropping is what makes room for a new sheet. |
++| Ordering within the first-use queue | Earliest admitted first | Least recently referenced first | Every sheet in the first-use queue has exactly one reference, so admission order is the only ordering signal available for it. |
++| A sheet larger than its queue's budget | Serve it to the client without caching it | Admit it anyway and evict the queue's other sheets | Admitting it would either push that queue past its budget or force eviction of reused sheets to keep the total within 12 GiB, spending the protected budget on a sheet that is unlikely to be requested again. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. The split between the two queue budgets is a tuning parameter. Revisit it against observed production workloads — for example, if comparison sessions dominate, shift budget from the first-use queue to the reused queue.
++2. If rendered sheet sizes move far from the typical 2 MiB, recompute both budgets from measured sizes rather than keeping the current split.
++3. The rendering queue's concurrency limit of four jobs is not derived from the worker sizing in the high-level design; reconcile the two.
++
++## References
++
++- `docs/intent/previews/previews-specs.md` — EARS specifications owned by this node.
++- `docs/high-level-design.md` — project-level approach, goals, and tenets.
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..10f4c52 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,18 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++- [ ] **PREVIEW-006**: The system SHALL keep every cached sheet in exactly one of two queues, a first-use queue or a reused queue, and SHALL keep no cached sheet outside them.
++- [ ] **PREVIEW-007**: When a newly rendered sheet is admitted to the cache, the system SHALL insert it into the first-use queue.
++- [ ] **PREVIEW-008**: When a request is served a sheet that was rendered in response to that request, including a request that presents the job ticket issued for that render, the system SHALL NOT move that sheet into the reused queue.
++- [ ] **PREVIEW-009**: When a request that is neither the request that caused a sheet to be rendered nor a request presenting the job ticket issued for that render is served from a sheet held in the first-use queue, the system SHALL move that sheet into the reused queue.
++- [ ] **PREVIEW-010**: When a sheet is moved into the reused queue, the system SHALL make that sheet the most recently used sheet in the reused queue.
++- [ ] **PREVIEW-011**: When a request is served from a sheet held in the reused queue, the system SHALL make that sheet the most recently used sheet in the reused queue.
++- [ ] **PREVIEW-012**: When admitting a sheet to the first-use queue would push that queue past its byte budget, the system SHALL evict the sheets in that queue that were admitted earliest until that queue's total bytes, including the admitted sheet, are within the budget.
++- [ ] **PREVIEW-013**: When moving a sheet into the reused queue would push that queue past its byte budget, the system SHALL evict the sheets in that queue that were served least recently until that queue's total bytes, including the moved sheet, are within the budget.
++- [ ] **PREVIEW-014**: The system SHALL keep the first-use queue's total bytes at or below 2.5 GiB and the reused queue's total bytes at or below 9.5 GiB.
++- [ ] **PREVIEW-015**: If a newly rendered sheet's JPEG data is larger than the first-use queue's byte budget, the system SHALL serve it to the requesting client without adding it to the cache.
++- [ ] **PREVIEW-016**: When a cache request causes a sheet to be moved between queues or causes a sheet to be evicted, the system SHALL return the same outcome it would have returned without that movement or eviction.
++- [ ] **PREVIEW-017**: When concurrent requests are served from the same sheet held in the first-use queue, the system SHALL move that sheet into the reused queue once.
++- [ ] **PREVIEW-018**: When a sheet is evicted from the cache, the system SHALL delete its cached JPEG data and SHALL NOT delete any source footage.
++- [ ] **PREVIEW-019**: The system SHALL keep temporary render output outside the two cached-sheet queues and SHALL remove that output when the render job completes or fails.
++- [ ] **PREVIEW-020**: The system SHALL run at most four render jobs at once and SHALL start render jobs in the order they were enqueued.

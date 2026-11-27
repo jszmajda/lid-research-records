@@ -1,0 +1,11 @@
+Overkill — I'd keep it as the Decisions row.
+
+The decision-doc test isn't "was this hard to decide?" (it clearly was — you went back and forth), it's "would a cold reader of the *landed* result re-litigate this without the full options-vs-criteria laid out?" Here they wouldn't, because the no-runtime-network tenet and the no-cloud-services non-goal eliminate the other two options as **gates**. A cold reader hits those tenets, sees that a networked backend can't serve a kiosk lookup, and the choice reads as almost forced. That's the textbook "inherited constraint settles it" case the heuristic routes to a row, not a doc.
+
+A decision doc earns its place when the choice stays genuinely *live* — competing options traded against criteria where the result could reasonably have gone another way. The reason this one *felt* live in the moment (maintenance, cost, extensibility all looked close) is real, but those are the criteria that got overridden by a hard gate, not criteria the final design still turns on. Writing the full doc would memorialize a deliberation that the landed system doesn't need to re-run — which is exactly the kind of residue the "docs carry current intent" tenet strips.
+
+The row already carries the load-bearing part: the two alternatives are named, and the rationale says *why* they're out (network at lookup time vs. the tenets) plus the accepted cost (each kiosk rebuilds its own index). A cold reader gets what they need in one line.
+
+The one thing that *would* flip my answer: if you tell me the no-network tenets are actually up for debate — then the other two options come back into contention, the choice becomes live again, and a decision doc (owned by the HLD, since the tenets are HLD substance) would earn its place. But as long as those tenets stand, a row is right.
+
+So — row, not doc. That still leaves my earlier questions open: the HLD one-line edit to confirm, and your call on the uniqueness-under-normalization question before I cascade to the specs.

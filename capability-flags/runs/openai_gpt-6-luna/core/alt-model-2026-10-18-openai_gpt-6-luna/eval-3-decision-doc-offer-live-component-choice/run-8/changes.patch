@@ -1,0 +1,112 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 55f85ac..ff95a7f 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -15,11 +15,11 @@ Provide offline capture, a server-side record store, and a review-to-export work
+ | Node | Responsibility | Design | State |
+ |---|---|---|---|
+ | site-catalog | Maintain stable plot references and distribute the field catalog | docs/intent/site-catalog/site-catalog-design.md | Drafted |
+-| record-store | Accept visit submissions and define how concurrent edits become a current record | docs/intent/record-store/record-store-design.md | Drafted; concurrency choice open |
++| record-store | Accept visit submissions and define how concurrent edits become a current record | docs/intent/record-store/record-store-design.md | Whole-visit revisions selected; contract in progress |
+ | tablet-sync | Keep local drafts, submit changes, and explain server outcomes to field workers | docs/intent/tablet-sync/tablet-sync-design.md | Not written |
+ | review-export | Present review work and produce the partner's reviewed CSV | docs/intent/review-export/review-export-design.md | Not written |
+ 
+-The concurrency mechanism belongs to record-store, not this HLD. Tablet-sync and review-export depend on that node's unresolved choice: it determines submission metadata, the shape of review work, and which record states can enter an export. Those two designs must wait for its contract.
++The concurrency mechanism belongs to record-store, not this HLD. Tablet-sync and review-export depend on its submission metadata, the shape of review work, and which record states can enter an export. Those two designs must wait for its contract.
+ 
+ ## Tenets
+ 
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..24a48ff 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -7,35 +7,73 @@ prefix: REC
+ 
+ ## Context
+ 
+-This node owns visit persistence and the meaning of a current visit when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a catalog plot ID. Updates can arrive days after their starting state was fetched. The server must not treat arrival order as evidence that one worker's observations are more authoritative.
++The record store accepts vegetation-visit submissions and provides the authoritative visit state used by review and export. A visit is identified by a client-generated UUID and refers to a catalog plot ID. Workers may edit the same visit independently while tablets are offline, so a submission can be based on an older visit state than the one currently stored.
+ 
+-Tablet-sync and review-export are not yet designed. Their contracts depend on the concurrency mechanism selected here. Neither the HLD nor the catalog contract selects that mechanism.
++The record store preserves every accepted submission as a complete visit revision. It does not infer that edits to different fields are scientifically independent. When a submission is based on a revision that is no longer current, the record store retains it as competing review work rather than combining it with the current revision.
+ 
+-## Architecture
++Tablet-sync and review-export depend on this node's submission and review contract. Their designs are separate: tablet-sync owns local draft and retry behavior, while review-export owns the coordinator workflow and CSV production.
+ 
+-The record store exposes authenticated submission, current-state retrieval, submission-history retrieval, and review-outcome operations. Persistence keeps original submissions, their authors, and server receipt times. A submission carries an idempotency key so a connection failure does not create another edit on retry.
++## Visit Revisions
+ 
+-A visit's scientific fields include observation date, observer list, species cover estimates, and notes. Some edits are unrelated, such as correcting an observer name and adding a missing species. Other edits are related, such as revising a species identification and its cover estimate. The server cannot infer all such relationships from field names.
++Each accepted submission contains a complete visit snapshot, not a patch. It includes a visit ID, plot ID, observation date, observer list, species cover estimates, and notes. The server assigns an immutable revision ID and retains the submitted payload, submitting worker, receipt time, and the revision ID on which the submission was based. A separate idempotency key identifies retries of that submission.
+ 
+-The selected concurrency policy will define the remaining submission metadata and review operations. They are deliberately not specified yet.
++A new visit has no base revision. An edit identifies the server-issued revision ID for the visit snapshot from which the worker made the edit. The record store validates that the base revision belongs to that visit. The server does not use receipt time or field-level rules to combine edits.
++
++The record store maintains a selected current revision and any unresolved competing revisions for each visit. When an edit is based on the selected current revision and no review is open, its complete snapshot becomes the selected current revision. When an edit is based on a revision that is no longer selected, the complete submission is retained as a competing revision and the visit is marked unresolved. The review set includes the previously selected revision and each competing revision; none is treated as resolved while review is open. The selected revision remains available in retrieval responses, marked unresolved, until a coordinator resolves the set.
++
++An unresolved visit is not eligible for partner CSV export. Its complete revisions and their base-revision information remain available for comparison. The record store reports unresolved status and provides the revision data needed by review-export; review-export owns the comparison screen and export workflow.
+ 
+ ## Submission and Retrieval
+ 
+-Authenticate the submitting worker and validate field types and plot references before accepting a submission. Preserve the original payload separately from any later resolved or combined representation. A retry with the same key and identical payload returns the original acceptance result; reuse with a different payload is rejected.
++The submission operation authenticates the worker and validates field types, plot references, visit identity, and base-revision ownership before accepting a revision. Each accepted submission is retained independently of later current-state changes or review outcomes.
++
++For an idempotency key already accepted with an identical payload and base revision, the record store returns the original acceptance result without creating another revision. Reuse of an accepted key with a different payload or base revision is rejected without changing stored data.
++
++Retrieval returns the selected current revision and explicitly indicates whether the visit has unresolved competing revisions. Review retrieval provides the complete competing revisions, their base revision, and the identifiers and authorship metadata needed to audit the submissions. A caller must not interpret a selected current revision as resolved when the unresolved indicator is set.
++
++## Review Resolution
++
++A coordinator resolves an unresolved visit by selecting a complete revision as the resolved current state. Resolution records the coordinator identity, resolution time, selected revision ID, and the competing revision IDs considered. The original submissions and revision lineage remain retained after resolution.
++
++The detailed behavior for new submissions arriving while review is open, and the permitted resolution outcomes when no submitted revision is suitable, remain open for review before the contract is finalized.
++
++## Downstream Contract Obligations
++
++These obligations guide the sibling designs without defining their internal workflows.
++
++### Tablet Sync
++
++- Store the server-issued base revision ID with the visit snapshot used to start an edit.
++- Submit a complete visit snapshot with its base revision ID and an idempotency key; retries must reuse the same key and payload.
++- Distinguish a revision accepted as current from one retained as competing review work, so a competing submission is not presented as an ordinary resolved update.
++- Preserve enough submission context to retry or explain the server's outcome while offline and after reconnection.
++
++### Review and Export
++
++- Present complete competing revisions together with their base-revision information so a coordinator can compare whole visits.
++- Record which revision the coordinator selected, who resolved the visit, and which competing revision IDs were considered.
++- Exclude every visit with unresolved competing revisions from the partner CSV. A resolved visit becomes eligible according to the review-export contract.
++- Preserve revision provenance from the accepted submissions through the selected resolved state and exported values.
++
++## Decisions & Alternatives
+ 
+-Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Concurrent edits to a visit | Whole-visit revisions; stale-base submissions are retained as competing revisions for coordinator resolution | Field-aware three-way merge of disjoint changes, with overlapping changes sent to review | Whole revisions preserve each worker's complete submitted observation and avoid maintaining merge rules that could combine scientifically related changes across fields. This intentionally increases review volume. Field-aware merging remains worth considering because it could automatically combine genuinely unrelated edits and reduce the coordinator queue; it is not selected because field independence cannot reliably be inferred from field boundaries. |
+ 
+-## Open Design Choice: Concurrent Visit Edits
++## Open Questions & Future Decisions
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++### Resolved
+ 
+-Two approaches remain credible:
++1. Concurrent visit edits use whole-visit revisions. Submissions based on a stale revision remain intact and create unresolved review work.
++2. The record store supplies revision and unresolved-state data; tablet-sync and review-export define their own user-facing workflows against that contract.
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++### Deferred
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++1. Define the exact behavior for submissions received while a visit already has unresolved review work, including whether additional edits join the open review set or are rejected for resubmission after resolution.
++2. Decide whether a coordinator may resolve a visit only by selecting a submitted revision or may also create a corrected complete revision.
+ 
+-## Downstream Contract Work
++## References
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++- [High-Level Design](../../high-level-design.md)
++- [Record Store EARS Specs](record-store-specs.md)

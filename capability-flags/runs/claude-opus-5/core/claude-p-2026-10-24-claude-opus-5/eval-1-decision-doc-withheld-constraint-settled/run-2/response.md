@@ -1,0 +1,19 @@
+Registry LLD is drafted around the local SQLite index. Phase 2 stop — here's what landed and what needs you.
+
+**Coherence pre-flight.** HLD, registry LLD, certificates LLD, and both spec files are mutually coherent; REG-001–004 trace to the registry design and nothing downstream exists yet (no tests, no code). One stale line fixed: the HLD still said the registry's "private lookup backend remains open," now that it isn't.
+
+**`docs/intent/registry/registry-design.md`** — the backend choice is recorded and the design built out around it:
+
+- **Import** is now a 6-step build-then-swap: verify → build in `staging/` → validate during the build → publish into `snapshots/` → commit by renaming the active-snapshot pointer → retire the superseded index. The rename is the single commit point, so a failed or power-cut import leaves the previous snapshot whole and active; unreferenced staging files are swept at startup and at the next import, so there's no repair pass. Imports are single-writer.
+- **Index store** — directory layout, two tables (`records` keyed on a normalized `serial_key` with `serial_display` preserved for the certificate; `snapshot_meta` for date, schema version, record count), read-only opens, and per-lookup pointer resolution so a lookup in flight during activation finishes against the index it started on.
+- **Decisions & Alternatives** — five rows: the backend choice itself (with the HTTPS directory and managed search service named as rejected), per-kiosk index build vs. shipping a prebuilt index, pointer swap vs. in-place replacement, build-time vs. query-time normalization, and reading the snapshot date from the probed index rather than a process variable.
+
+One thing worth saying about the choice feeling close: two of the three options couldn't actually have won. The HLD tenets already require lookup to complete from files on the kiosk with no runtime network access, so the HTTPS directory and the managed service were both ruled out before their trade-offs mattered — what looked like a three-way call was really the one compliant option plus two that would have needed a tenet change first. That also means it doesn't earn a decision doc: an inherited constraint settles it, and a cold reader has the Decisions row. If you'd rather revisit the tenet than accept per-kiosk index rebuilds, say so and that becomes a Phase 1 change instead.
+
+**Edge probe** (delegated, design-internal gaps only — I fixed three it caught in my draft: the missing staging→`snapshots/` publish step, handle/pointer lifetime, and import concurrency). Eight gaps are parked under Open Questions → Deferred. Three of them block Phase 3, so I'd like your call before touching specs:
+
+1. **`findBySerial` has no failure result.** First boot before any import, or an index that won't open, has nothing to return — the type admits only `Found` and `NotFound`. Adding a third variant changes the interface the certificates node consumes, so it's a cross-segment change I won't make unilaterally. Options: add an error variant and cascade to certificates, or treat "no usable snapshot" as a startup condition the kiosk refuses to run in.
+2. **What counts as a duplicate serial (REG-003)?** My schema makes the normalized `serial_key` the primary key, so two records differing only in case or surrounding whitespace reject the whole import. Is that the uniqueness you mean, or should duplicates be judged on the serial as written and only lookup normalize?
+3. **How far does normalization go (REG-001)?** The spec says surrounding whitespace and ASCII letter case. Does `AB 12` keep its interior space, and do non-ASCII letters pass through untouched?
+
+Answer those three and I'll take the specs through Phase 3; tell me how you want the remaining five deferred items triaged (fix now vs. leave parked) and I'll fold that in.

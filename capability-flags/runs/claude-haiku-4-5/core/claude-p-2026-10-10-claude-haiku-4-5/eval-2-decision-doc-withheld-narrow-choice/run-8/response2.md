@@ -1,0 +1,7 @@
+I'd apply the LID test honestly here: your investment in the debate is real, and the choice among three credible alternatives is genuine. The 25%/75% split will need tuning, and a future reader modifying cache behavior would benefit from understanding the tradeoffs.
+
+But the decision affects only the previews segment—it doesn't cross into the review API or reshape the system's architecture. The external interface stays the same regardless. By the LID bar ("credible options, multiple criteria, other nodes sized around the result"), a doc would be richer but the **Decisions & Alternatives row I added captures the load-bearing rationale already**: you chose 2Q for the balance between protecting comparison-session working sets (A2) while resisting sequential-scan vulnerability, and the row names the alternatives you weighed and why they fell short.
+
+**My judgment**: the row is sufficient. If a future reader asks "why 2Q?", the table answers them. If you want the extra record of the tradeoffs—a place to document the three meetings and why each option was ruled out—that's valid too, but it's at the edge of "decision doc or careful-row" territory, not clearly a must-have.
+
+What's your call?

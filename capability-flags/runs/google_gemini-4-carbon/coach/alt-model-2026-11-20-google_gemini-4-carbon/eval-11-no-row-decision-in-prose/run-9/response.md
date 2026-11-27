@@ -1,0 +1,32 @@
+*Design-stage arrow — strong tree structure and crisp prose, with a live tenet tension and unstarted test/code phases.*
+
+**Scorecard**
+- ✓ Tree & mutation hygiene — clean depth-2 `docs/intent/` layout (`QUEUE`, `REG`), focused HLD, zero changelog residue
+- ✓ Mode fit — Full mode matches a greenfield, whole-service repository
+- ✗ Arrow completeness — all 8 EARS specs are marked `[x]`, while Phase 5 tests and Phase 6 code do not exist yet
+- ✗ Tenet & decision alignment — the in-memory queue works against the walk-away promise on restarts, with no `Decisions & Alternatives` record
+- ⚠ Cross-segment & rung coherence — `suspect` printer state crosses into `printer-registry` undefined, and several LLD behaviors lack EARS specs
+- ⚠ LLD sufficiency & spec scoping — staff/member identity, multi-model printer APIs, and `staff` vs. `member` spec scope remain open
+
+`printfarm` has a clean, domain-grounded HLD, well-bounded `job-queue` and `printer-registry` nodes, and strong rationale on the decisions already tabulated; the highest-leverage next step is resolving the queue-durability vs. walk-away-promise tension and resetting spec markers to `[ ]` before moving into Phase 4 edge auditing and Phase 5 failing tests.
+
+**Findings (10 total · 5 high · 4 medium · 1 low)**
+- **F1 (high):** In-memory `job-queue` (`docs/intent/job-queue/job-queue-design.md`) loses waiting evening jobs during the mini-PC's unattended OS updates and power blips, working against the HLD's "submitted job is a promise" tenet and overnight-print goal with no recorded exception · *tenets capture forward-looking preference* — downstream designs lean with the HLD's tenets and goals, or explicitly record the trade-off
+- **F2 (high):** Keeping `job-queue` purely in process memory sits in `job-queue-design.md` body prose with no `Decisions & Alternatives` row, even though `printer-registry` already runs SQLite on the mini-PC and G-code already lands on disk · *docs carry current intent, written to be read cold* — live choices a cold reader would question belong in `Decisions & Alternatives` with rejected options and accepted costs
+- **F3 (high):** All 8 EARS specs in `job-queue-specs.md` and `printer-registry-specs.md` are marked `[x]` although the repository has no Phase 5 tests or Phase 6 implementation files yet · *canonical arrow shape — with a recursive design layer* — intent walks `HLD → LLDs → EARS → Tests → Code`, reserving `[x]` for specs realized by tests and code
+- **F4 (high):** `job-queue` and `QUEUE-003` mark a printer `suspect` when a dispatch attempt is rejected or times out, crossing into `printer-registry`'s state model where `suspect` is neither defined nor reconciled with 15-second heartbeats · *intent attaches at the lowest node that dominates it; cascade within a segment, pause across* — state shared across sibling segments needs a coordinated contract cascaded to both nodes
+- **F5 (high):** Both LLDs leave staff-vs.-member authentication, multi-model printer API contracts, and how `QUEUE-004` correlates running jobs after an in-memory wipe open to divergent implementations · *LLDs close enough of the solution space* — a leaf design narrows open edges enough that two agents reading it cold land on compatible designs
+- **F6 (medium):** Several LLD behaviors — rejecting uploads for printerless classes, `staff`-before-`member` priority ordering, staff printer registration, and normal `busy` → `idle` heartbeat transitions — have no EARS specs · *effective intent-tree alignment* — LLD behaviors trace to grep-anchored EARS IDs so tests and `@spec` annotations have explicit targets
+- **F7 (medium):** `docs/high-level-design.md` lists its three tenets as unordered bullets despite tension between job durability and keeping the mini-PC service small, and embeds a spec-shaped rule ("no silent reordering") inside the second tenet · *tenets capture forward-looking preference* — tenets work best as priority-ordered one-line tie-breakers rather than unordered bullets or triggered rules
+- **F8 (medium):** `QUEUE-001` scopes the 64 MB upload cap to "a member" (leaving `staff` uploads ambiguous) and `job-queue` uses "class" for both printer hardware classes and `staff`/`member` priority tiers · *scope disambiguation* — each spec line should stand alone via `grep` without implicit role scoping or overloaded terms
+- **F9 (medium):** `job-queue`'s FIFO `Scheduling order` row relies on staff reordering to mitigate class monopolization, leaving the HLD's fair-access goal unguarded during unattended overnight runs or back-to-back submissions by one member · *coherence is adjacency* — mitigations at a downstream rung should hold under the operating conditions described upstream
+- **F10 (low):** `CLAUDE.md` carries a minimal directive line rather than the full LID workflow and `@spec` guidance block (reconcilable via `/update-lid`), and spec files wrap `` `[x]` `` markers in backticks · *minimum surface, maximum discipline* — sticking to standard LID directive blocks and bare `- [ ]` status markers keeps guidance uniform across sessions and tools
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/job-queue/job-queue-design.md`, `docs/intent/job-queue/job-queue-specs.md`, `docs/intent/printer-registry/printer-registry-design.md`, `docs/intent/printer-registry/printer-registry-specs.md` (entire repository; no `docs/arrows/` overlay present)
+- Enumerated: 1 HLD, 2 leaf LLDs (`QUEUE`, `REG`), 2 spec files, 8 EARS specs (`QUEUE-001`–`QUEUE-005`, `REG-001`–`REG-003`), 5 `Decisions & Alternatives` rows
+- Implementation & linkage check: 0 test files, 0 source files, 0 `@spec` references (all 8 EARS specs currently marked `[x]`)
+
+Want me to walk through the findings in detail, focus on a priority tier or theme (such as queue durability, the `job-queue` ↔ `printer-registry` state seam, or closing LLD/EARS gaps before writing tests), or work through specific items like `F1`–`F5` together?
+
+If you have broader questions about using LID on `printfarm` — such as when a trade-off warrants a standalone decision doc vs. a `Decisions & Alternatives` row, how to run a Phase 4 edge audit on these specs, or how to walk Phases 5–6 from a spec-only starting point — I can help with those too.

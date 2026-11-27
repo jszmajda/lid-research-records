@@ -1,0 +1,3 @@
+Created `docs/decisions/change-delivery.md` and linked it from `## Key Design Decisions` in `docs/high-level-design.md`.
+
+Ready to move to Phase 2 for `change-store`, `delivery`, and `browser-sync` once you confirm the HLD and decision doc look good (and let me know which node you want to start with, or if you'd like to update `docs/intent/access/access-design.md`'s stale "still-open change-delivery approach" note as well).

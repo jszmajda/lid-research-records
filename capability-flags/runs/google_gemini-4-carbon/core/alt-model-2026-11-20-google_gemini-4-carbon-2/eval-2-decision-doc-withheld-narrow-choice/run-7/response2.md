@@ -1,0 +1,11 @@
+I’d recommend **keeping the `Decisions & Alternatives` table row in `previews-design.md` and skipping a standalone decision doc.**
+
+Here is why:
+
+1. **Look forward from the landed design, not back at the debate.** Three meetings and a 180-message thread make the choice feel monumental, but a decision doc earns its place based on what a future cold reader of the codebase needs—not how painful it was to settle. (And because docs carry current intent rather than deliberation history, a decision doc wouldn't record the thread anyway.)
+2. **Nothing outside `previews` leans on this choice.** By design, replacement bookkeeping is sealed inside the preview worker: `review-api`, the `200`/`202`/`404` HTTP contract, the four-slot render queue, and the 12 GiB disk cap are identical under LRU, aged frequency, and 2Q. Because no sibling component is sized around 2Q, changing or tuning the policy later has zero cross-node blast radius.
+3. **One table row settles "why 2Q?" cleanly.** A cold reader will reasonably wonder why the worker maintains two queues instead of plain LRU, and the row in `previews-design.md` already captures the full three-way trade (protecting comparison sets during sequential screenings, avoiding stale popularity across project switches, and accepting private queue/split bookkeeping). Keeping standalone decision docs rare preserves signal for choices that genuinely shape multiple nodes or stay actively contested.
+
+The only reason to write `docs/intent/previews/decisions/cache-eviction-policy.md` is if you expect the team to keep re-litigating the policy during the pilot and want explicit weighted criteria laid out so someone can re-run the evaluation against real screening telemetry—at the cost of maintaining an extra artifact for a worker-private mechanism.
+
+If you still want the standalone decision doc with that trade-off in mind, say the word and I'll draft it under `docs/intent/previews/decisions/` and link it from the table row. Otherwise, we can keep the table row as-is—just let me know your calls on the numbered Phase 2 items above so we can wrap up `previews-design.md` and move to **Phase 3 (`previews-specs.md`)**.

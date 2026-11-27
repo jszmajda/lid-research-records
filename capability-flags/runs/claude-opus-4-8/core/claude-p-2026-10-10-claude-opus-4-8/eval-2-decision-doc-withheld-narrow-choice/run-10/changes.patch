@@ -1,0 +1,41 @@
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..9a5a14d 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,35 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Eviction: 2Q
++
++The worker replaces sheets with 2Q, which separates sheets on first use from sheets that have been requested again. A long screening pass fills the cache with sheets touched once; 2Q keeps those out of the protected set until a sheet proves it is reused, so a comparison session's working set survives a screening that would flush a single recency- or frequency-ordered list.
++
++Three structures hold the state, all private to the worker:
++
++- **Recent queue** — a FIFO of sheets admitted on first use, holding their JPEG bytes. Bounded by a byte budget, the *recent share* of the 12 GiB (see Open Questions).
++- **Hot queue** — an LRU of sheets that were requested again after aging out of the recent queue, holding their JPEG bytes. Holds the rest of the 12 GiB.
++- **Ghost queue** — a FIFO of cache keys only (clip ID, revision, renderer version) for sheets recently evicted from the recent queue. It carries no JPEG bytes, so it does not count against the 12 GiB limit, and it is bounded by a key count (see Open Questions).
++
++The 12 GiB bound is on total JPEG bytes — recent queue plus hot queue. The ghost queue is pure bookkeeping.
++
++**Admission (a render completes for key K).** If K is currently in the ghost queue, the sheet has been requested again since its first eviction: admit it to the most-recent end of the hot queue and drop its ghost entry. Otherwise it is a first use: admit it to the tail of the recent queue.
++
++**Serving a cached request.** A request whose key is in the hot queue serves the bytes and moves that sheet to the most-recent end of the hot queue. A request whose key is in the recent queue serves the bytes but leaves the sheet in place — a second touch while a sheet is still in the recent queue does not promote it. Promotion happens only through the ghost queue: this is what makes a screening pass, which touches each sheet a small number of times before moving on, fail to protect its sheets. A request whose key is in the ghost queue only (bytes already evicted) is an ordinary cache miss — it enqueues a render per the existing miss path, and that render's completion admits the sheet to the hot queue by the admission rule above.
++
++**Eviction (space is needed to admit a sheet).** Evict until the incoming sheet fits within 12 GiB. Each eviction step: if the recent queue is over its byte budget, evict the oldest sheet at its FIFO head and record that key in the ghost queue; otherwise evict the least-recently-used sheet from the hot queue and discard it without a ghost entry. When the ghost queue is over its key-count bound, drop its oldest key. Eviction never deletes source footage or changes job-ticket semantics.
++
++A key carries its renderer version, so after a renderer upgrade the stale keys in the ghost queue simply never match a new request and age out at the FIFO head.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (recent/hot split with a ghost queue) | LRU; frequency-based eviction with aging | 2Q protects a comparison session's reused sheets from being flushed by a long sequential screening, because a sheet joins the protected hot queue only after it is requested again. LRU carries the least bookkeeping and adapts fastest when an editor switches projects, but a long screening evicts the comparison working set. Frequency-with-aging retains repeatedly popular sheets but adds per-sheet counter maintenance and aging work and can keep a prior project's favorites warm after a switch. The extra queues and the recent/hot size split are accepted as the cost of scan resistance. All three leave the external interface, render-queue concurrency, and 12 GiB disk budget unchanged. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. **Recent share (recent-queue byte budget).** The fraction of the 12 GiB the recent queue may hold before its head is evicted ahead of the hot queue. A smaller share protects more hot sheets but ghosts first-use sheets sooner; a larger share tolerates longer bursts of genuinely new work before eviction. Classic 2Q defaults to ~25% (≈3 GiB here). Needs a starting value and a way to tune it.
++2. **Ghost-queue key count.** How many evicted-sheet keys the ghost queue remembers. It sets the window in which a re-request still promotes a sheet to the hot queue; too small and reused sheets are not recognized, too large and the window spans unrelated sessions. Keys are tiny, so the cost is bookkeeping, not bytes. Needs a starting value tied to the expected number of cached sheets (≈6,000 at 2 MiB each).

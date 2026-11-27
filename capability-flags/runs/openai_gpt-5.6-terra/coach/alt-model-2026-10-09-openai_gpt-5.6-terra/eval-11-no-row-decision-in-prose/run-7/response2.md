@@ -1,0 +1,11 @@
+`docs/intent/job-queue/job-queue-design.md:14` says accepted jobs live only in process memory and are lost if the mini-PC restarts before dispatch; `:10` explicitly anticipates power blips. That means a member can successfully upload a job in the evening, receive the implied acceptance, and still have no job waiting by morning. It conflicts with the HLD’s “submitted job is a promise” tenet (`docs/high-level-design.md:20`) and its unattended-upload goal (`:26`). Under *tenet cascade* — leaf designs should lean the way the HLD says to lean — this is a meaningful operating-condition conflict, not merely a reliability tradeoff.
+
+The practical cost is also asymmetric: the job’s G-code already persists on disk by content hash, but the queue record that makes it dispatchable does not. A restart therefore preserves storage while losing the member’s place in line and the service’s acceptance commitment. Because `QUEUE-004` only requires rebuilding the printer’s current job at startup, it does not protect queued work either.
+
+There are three valid directions; I would have you choose the product promise first rather than silently treating this as an implementation detail:
+
+1. **Change the design:** persist accepted job records and queue ordering alongside the G-code, restore undispatched jobs at startup, and reconcile dispatched jobs against printer state. This best preserves the current “upload and walk away” tenet, while adding storage schema and recovery behavior.
+2. **Record an explicit exception:** keep in-memory queues, but add a `Decisions & Alternatives` row in `job-queue-design.md` naming the submitted-job tenet and overnight-upload goal being traded off, why volatile queues are acceptable, and the accepted member-facing cost. The UI and acceptance behavior should then make that limitation clear enough that “accepted” is not misleading.
+3. **Revise the HLD tenet:** if the makerspace intends best-effort queuing rather than durable submission, narrow the promise in `docs/high-level-design.md` so it accurately states that acceptance lasts only for the running service instance.
+
+If you choose durable queuing, start `/linked-intent-dev` with that change: it can add the recovery and persistence decisions, the EARS cases for acceptance, restart, and reconciliation, and tests before implementation.

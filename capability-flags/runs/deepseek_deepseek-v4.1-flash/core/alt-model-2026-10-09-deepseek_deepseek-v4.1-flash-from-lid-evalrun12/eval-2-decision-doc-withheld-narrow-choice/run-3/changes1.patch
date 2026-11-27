@@ -1,0 +1,57 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..facde7d 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache governed by a two-queue (2Q) eviction policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..947fc31 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,38 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### Eviction Policy: Two-Queue (2Q)
++
++The cache uses a two-queue (2Q) replacement policy. A long sequential screening streams many one-use sheets through the worker; comparison sessions repeatedly revisit a small working set. 2Q keeps the scan from evicting the working set by separating sheets seen once from sheets seen again.
++
++Two queues partition the entries:
++
++- **A1in** — a FIFO queue holding sheets requested exactly once since admission.
++- **Am** — an LRU queue holding sheets requested more than once (the comparison working set).
++
++Access moves entries between the queues:
++
++- Admitting a newly rendered sheet appends it to the tail of A1in.
++- A cached hit in A1in promotes the entry to Am as most-recently used.
++- A cached hit in Am moves the entry to most-recently used.
++
++Admission evicts in a fixed order: first from A1in, oldest first, until A1in is within its target size; then from Am, least-recently used first, until the 12 GiB bound is satisfied. Keeping A1in bounded and FIFO lets a screening scan cycle through its own one-use sheets without displacing Am's reused sheets.
++
++The size split between A1in and Am, and whether A1in's target is fixed or adapts to observed reuse, are unresolved — see Open Questions. All queue state is private to the worker; no other node reads it, pins entries, or depends on it.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|-------------------------|-----------|
++| Eviction policy for the private preview cache | Two-queue (2Q) with A1in FIFO and Am LRU | LRU; frequency-based eviction with aging | Comparison sessions revisit a small working set while long screenings stream one-use sheets. LRU follows recent work cheaply but lets a screening scan evict the working set. Aged frequency counts retain repeatedly popular clips but need counter maintenance and lag a project switch. 2Q's bounded FIFO absorbs the scan while its LRU queue retains reused sheets. All three leave the external interface, queue concurrency, and disk budget unchanged, so the extra queue state stays private to the worker, per the HLD tenet on replacing bookkeeping. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Cache replacement policy: two-queue (2Q), chosen over LRU and aged frequency (see Decisions & Alternatives).
++
++### Deferred
++
++1. **A1in/Am size split.** The policy needs a target size for A1in, expressed as a share of the 12 GiB budget. A larger A1in gives freshly rendered sheets more time to earn a second request; a smaller A1in resists a screening scan harder but can evict a lightly reused sheet before its reuse arrives. Candidate splits to tune against the pilot workload: 10%, 25%, and 50%.
++2. **Fixed vs. adaptive A1in target.** The doc's two-queue shape can keep the split as a tuned constant, or follow textbook 2Q with a ghost list (A1out) that records recently evicted A1in keys and shrinks or grows A1in based on whether evicted keys are reclaimed. The ghost-list variant absorbs a shifting mix without manual tuning, at the cost of the replay bookkeeping.

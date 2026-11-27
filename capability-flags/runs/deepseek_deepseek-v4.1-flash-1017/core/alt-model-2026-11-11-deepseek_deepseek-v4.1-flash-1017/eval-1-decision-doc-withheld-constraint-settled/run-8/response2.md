@@ -1,0 +1,3 @@
+Overkill. The offline tenet settles it: the two network-backed options fail an inherited constraint, and the choice affects only the registry node, so it doesn't clear the "stays genuinely live for a cold reader" bar. The Decisions & Alternatives row already carries the rationale; a full decision doc would just re-argue a constraint the HLD already fixes.
+
+It would only earn a doc if that tenet were ever relaxed, since then all three options would become credible again.

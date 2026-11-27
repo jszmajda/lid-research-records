@@ -1,0 +1,64 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..dee94c3 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using 2Q replacement.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..849c697 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. 2Q replacement separates these two populations so a screening scan cannot evict sheets that editors keep returning to.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,36 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### 2Q Replacement
++
++The cache keeps two queues of admitted entries, partitioned by a byte budget rather than an entry count, since sheet sizes vary around the 2 MiB typical:
++
++- **A1 (screening buffer)** — a FIFO queue holding at most 25% of the 12 GiB budget (3 GiB, roughly 1,500 typical sheets). Every newly rendered sheet is admitted here. Its job is to absorb screening scans: one-off sheets occupy A1 and are evicted oldest-first without ever touching reused entries.
++- **A2 (comparison set)** — an LRU queue holding the remainder of the budget (up to 9 GiB). A sheet reaches A2 only by being requested a second time while still cached, which is what distinguishes a comparison sheet from scan debris.
++
++On a cache hit, the entry's queue position updates without any I/O: a hit on an A1 entry promotes it to A2's most-recently-used end (moving its bytes from the A1 budget to the A2 budget); a hit on an A2 entry refreshes its LRU position. On admission, evict in order — A1 head first, then, only when A1 is empty, the A2 LRU tail — repeatedly until the incoming sheet fits within the total 12 GiB and the A1 admission fits within 3 GiB. If promoting an entry would push A2 past its share, evict the A2 LRU tail to make room.
++
++Once evicted, a sheet has no memory: a later request re-renders and the fresh admission starts again in A1. There is no ghost list of recently evicted keys.
++
++The 25/75 split is a starting point, tuned by observing how often A1 promotions happen during real screenings; it is configuration, not architecture, and adjusting it never changes the external interface, render queue concurrency, or the 12 GiB bound.
++
++All queue, budget, and position bookkeeping is private to the preview worker and mutated only on its single control thread; render jobs produce bytes but never touch replacement metadata. The review API and every other node continue to see only the fixed 200/202/404 interface.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q (two-queue: A1 FIFO + A2 LRU) | LRU; frequency-based eviction with aging | The dominant failure mode is a long sequential screening evicting the comparison working set, which plain LRU permits. Aged frequency counts also protect popular sheets but add counter maintenance on every hit and can keep a departed production's favorites resident after editors switch projects. 2Q's extra cost is one extra queue and a tunable size split — contained entirely inside the preview worker's private replacement bookkeeping, with no change to the preview API, render queue, or disk budget. |
++| 2Q variant | Two queues without a ghost list | Full 2Q with an A1-out ghost queue remembering recently evicted keys | A ghost list improves re-promotion of sheets whose second request arrives just after eviction, but adds a third structure and key-history bookkeeping. The comparison working set is small relative to A2, so the marginal retention is not worth the extra state in the pilot. |
++| Queue capacity accounting | Byte budgets per queue | Entry-count budgets | Sheet sizes vary around the 2 MiB typical; an entry-count split lets a few large sheets distort the intended byte shares. The binding constraint in PREVIEW-004 is bytes, so budgets are tracked in the same unit. |
++| A1 share of the budget | 25% (3 GiB), configuration | Larger A1 (more scan absorption); smaller A1 (more room for reused sheets) | 3 GiB covers roughly 1,500 typical sheets — larger than a day's screening run — while leaving 9 GiB for the comparison set. The split is the one parameter expected to need tuning; it is exposed as configuration and revisited after pilot observation. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Eviction policy: 2Q selected over LRU and frequency-based eviction with aging (see Decisions & Alternatives).
++
++### Deferred
++
++1. Exact A1/A2 byte-split value: start at 25/75 and tune from observed promotion rates during the pilot.

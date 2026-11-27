@@ -1,0 +1,5 @@
+I've written the decision doc at `docs/intent/previews/decisions/cache-eviction-policy.md` and linked it from the LLD's Decisions & Alternatives row, trimming that row's rationale down to a pointer plus the one-line summary.
+
+The doc lays out the three options against four decision elements (scan-protection, bookkeeping cost, project-switch adaptation, tuning burden), each scored individually rather than in a comparison table, and closes with 2Q's selection: it's the only option that structurally stops a long screening from evicting reused sheets, which is the failure mode you flagged directly — at the cost of the two-queue bookkeeping and the A1/Am split, which it names as the first thing to revisit if 2Q underperforms.
+
+This is still the Phase 2 LLD stop — the gap list from the edge-case probe is still open from my last message. Which of those do you want fixed in the LLD now versus deferred, so I can close out Phase 2 before moving to EARS?

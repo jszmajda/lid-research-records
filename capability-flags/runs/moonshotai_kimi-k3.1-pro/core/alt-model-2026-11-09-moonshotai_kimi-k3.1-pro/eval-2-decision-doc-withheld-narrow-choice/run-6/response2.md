@@ -1,0 +1,3 @@
+Yes—I think it earns a proper decision doc. Not because the debate was long, but because a future maintainer could reasonably revisit 2Q: it trades extra bookkeeping and queue tuning for scan resistance, and the alternatives remain credible under different workloads.
+
+I’d put it at `docs/intent/previews/decisions/cache-eviction-policy.md`, covering the workload, selection criteria, strongest case for each option, and why 2Q wins. The LLD would link to it from its decision row while retaining only the current design. The unresolved 2Q mechanics would remain in the LLD rather than becoming part of the policy decision.

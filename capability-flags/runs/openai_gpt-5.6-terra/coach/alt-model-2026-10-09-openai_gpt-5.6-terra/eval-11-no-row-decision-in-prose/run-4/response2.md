@@ -1,0 +1,11 @@
+`docs/intent/job-queue/job-queue-design.md:10-15` describes an unattended service on a mini-PC subject to “the occasional power blip,” but makes the queue entirely in-memory: after restart, it recovers only jobs already running and treats accepted, undispatched jobs as gone. That is in direct tension with the HLD tenet at `docs/high-level-design.md:20`, “A submitted job is a promise: members should be able to upload and walk away.” Under *tenet cascade* — leaf-level mechanisms should carry the HLD’s stated preferences into operating conditions — a member who uploads in the evening can lose their job overnight without knowing it. The service may still be intentionally small, but durability is the unresolved choice rather than an implementation detail.
+
+You have three valid directions; I would not choose one for you:
+
+1. **Change the design to preserve accepted jobs.** Persist queue metadata and its relationship to the on-disk content-hashed G-code files, then restore undispatched jobs after startup. This most directly fulfills the promise tenet and the overnight-upload goal. It would require tightening the queue LLD, adding EARS for persistence/recovery, and then implementing and testing those behaviors.
+
+2. **Keep volatile queue state and record the exception.** Add a `Decisions & Alternatives` row in `job-queue-design.md` that explicitly names the “submitted job is a promise” tenet being traded off, the reason volatile state is acceptable, the rejected durable alternative, and the accepted member-facing cost. The existing sentence about resubmission states the behavior, but it does not capture why that exception is acceptable.
+
+3. **Revise the tenet.** If the intended promise is only that uploads complete successfully while the service remains running, make that bounded expectation explicit in `docs/high-level-design.md`. This is appropriate only if job loss on a restart is genuinely acceptable to members and staff.
+
+The important part is that the HLD promise, LLD recovery behavior, specs, tests, and eventual UI messaging converge on one answer.

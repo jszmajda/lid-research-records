@@ -1,0 +1,3 @@
+That notification was just my own wait timer finishing — the edge probe results were already in my previous message. Nothing new.
+
+Still at the Phase 2 stop, waiting on your triage: the five calls (resolution subset vs. full set, plot-reference immutability, how far field validation goes, validation of composed resolutions, who may resolve), whether to fix the stale line in `site-catalog-design.md`, and whether you want the concurrency choice recorded as a decision doc or left as the Decisions table row.

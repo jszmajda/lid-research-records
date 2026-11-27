@@ -1,0 +1,181 @@
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..d74f1e0 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -9,7 +9,7 @@ prefix: REC
+ 
+ This node owns visit persistence and the meaning of a current visit when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a catalog plot ID. Updates can arrive days after their starting state was fetched. The server must not treat arrival order as evidence that one worker's observations are more authoritative.
+ 
+-Tablet-sync and review-export are not yet designed. Their contracts depend on the concurrency mechanism selected here. Neither the HLD nor the catalog contract selects that mechanism.
++The concurrency mechanism selected here determines the submission metadata tablets must track, the shape of review work coordinators see, and which visits are eligible for export. Tablet-sync and review-export will be designed against the contract defined below.
+ 
+ ## Architecture
+ 
+@@ -17,25 +17,156 @@ The record store exposes authenticated submission, current-state retrieval, subm
+ 
+ A visit's scientific fields include observation date, observer list, species cover estimates, and notes. Some edits are unrelated, such as correcting an observer name and adding a missing species. Other edits are related, such as revising a species identification and its cover estimate. The server cannot infer all such relationships from field names.
+ 
+-The selected concurrency policy will define the remaining submission metadata and review operations. They are deliberately not specified yet.
+-
+ ## Submission and Retrieval
+ 
+ Authenticate the submitting worker and validate field types and plot references before accepting a submission. Preserve the original payload separately from any later resolved or combined representation. A retry with the same key and identical payload returns the original acceptance result; reuse with a different payload is rejected.
+ 
+-Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
++Retrieval distinguishes between visits with a single current revision and visits with competing unresolved revisions awaiting coordinator review.
++
++## Whole-Visit Revision Model
++
++Each accepted submission creates a **revision** identified by a server-assigned revision ID. A revision holds:
++- The complete visit content (observation date, observer list, species cover estimates, notes)
++- The visit ID it belongs to
++- The base revision ID it started from (null for first submission)
++- Author ID and server receipt timestamp
++- Idempotency key
++
++When a submission's base revision ID matches the visit's current revision, the new revision becomes current. When a submission's base revision is older than current (another edit arrived first), both become **competing revisions** and the visit enters an unresolved state requiring coordinator review.
++
++A coordinator resolves competing revisions by selecting one as current or authoring a new revision that supersedes them. The original competing submissions remain permanently stored; resolution creates a new current revision and records which submissions it resolved.
++
++## Submission Envelope
++
++```
++POST /visits/{visit-id}/revisions
++Authorization: Bearer {worker-token}
++
++{
++  "idempotency_key": "uuid-v4",
++  "base_revision_id": "rev_abc123" | null,
++  "content": {
++    "observation_date": "2026-10-05",
++    "observers": ["Alice Chen", "Bob Martinez"],
++    "species_observations": [
++      {
++        "species_code": "AMBR",
++        "cover_percent": 15
++      }
++    ],
++    "notes": "High tide delayed access until 10:30"
++  }
++}
++```
++
++The visit ID is client-generated on first capture. The base revision ID is null for first submission or the revision ID the worker last fetched for subsequent edits. The server validates that the plot reference in the visit ID exists in the site catalog before accepting.
++
++## Current-State Response
++
++```
++GET /visits/{visit-id}
++
++{
++  "visit_id": "uuid-v4",
++  "plot_id": "plot-reference",
++  "status": "current" | "unresolved",
++  "current_revision": {
++    "revision_id": "rev_abc123",
++    "author_id": "worker-42",
++    "submitted_at": "2026-10-06T14:22:00Z",
++    "content": { ... }
++  },
++  "competing_revisions": [
++    {
++      "revision_id": "rev_def456",
++      "author_id": "worker-17",
++      "submitted_at": "2026-10-06T14:25:00Z",
++      "base_revision_id": "rev_abc123",
++      "content": { ... }
++    }
++  ] | null
++}
++```
++
++When status is `current`, competing_revisions is null. When status is `unresolved`, competing_revisions holds the revisions awaiting resolution, and current_revision reflects the last resolved or initially accepted state.
++
++## Resolution Operation
++
++```
++POST /visits/{visit-id}/resolve
++Authorization: Bearer {coordinator-token}
++
++{
++  "selected_revision_id": "rev_def456" | null,
++  "resolved_content": { ... } | null,
++  "resolved_revision_ids": ["rev_def456", "rev_ghi789"]
++}
++```
++
++Either selected_revision_id identifies an existing competing revision to adopt as current, or resolved_content provides coordinator-authored content that supersedes the competing revisions. The resolved_revision_ids list indicates which revisions this resolution settles. The server creates a new current revision recording the coordinator's identity and the resolved IDs.
++
++## Export Eligibility
++
++Only visits with status `current` are eligible for the weekly CSV export. Visits with status `unresolved` remain excluded until a coordinator resolves them. This ensures the exported dataset reflects explicitly reviewed state rather than silently choosing one worker's submission over another.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Concurrency mechanism | Whole-visit revisions | Field-aware three-way merge | Preserves the worker's submitted visit as a unit. Avoids maintaining merge rules that could silently combine scientifically related edits (e.g., species identification and its cover estimate). Creates more review work for unrelated field changes, but the team prefers explicit review over potentially incorrect automatic combinations. Field-aware merge remains credible for projects where the review burden of whole-visit conflicts would overwhelm coordinators, or where field independence is structurally guaranteed. This project's small coordinator team (two people) and relatively low edit volume (estimated 5-10 concurrent edits per week based on 6,000 visits/season and 48-hour offline windows) makes the explicit review workload manageable. |
++| Revision ID assignment | Server-assigned on acceptance | Client-generated UUIDs | Server assignment provides a reliable ordering for determining which revision was current when a concurrent edit arrived. Client-generated IDs would require additional timestamp comparison or vector clocks. |
++| Resolution recording | Store resolved revision IDs with new current revision | Mark original revisions as resolved in-place | Recording which revisions a resolution settled preserves the complete audit trail without mutating the original submissions. Supports future queries about what competing state a coordinator saw when resolving. |
++
++## Implications for Dependent Nodes
++
++### Tablet-Sync Requirements
++
++The whole-visit revision model creates these obligations for tablet-sync:
++
++1. **Base revision tracking**: After a successful submission or fetch, retain the returned revision_id as the base for the next edit of that visit. Local storage must persist this across app restarts.
++
++2. **Optimistic current state**: When a submission succeeds, the tablet may optimistically treat the new revision as current. When a submission creates a competing revision (detectable from the response), the tablet should indicate to the worker that their edit is pending coordinator review.
++
++3. **Conflict notification**: Workers need to see when their previously submitted edit was superseded by a coordinator resolution. The tablet must compare its last-known revision_id against the server's current_revision on sync and notify the worker if their edit is no longer current.
++
++4. **Retry state**: Idempotency keys must survive app crashes and reinstalls. A failed submission attempt must retry with the same key until the server confirms acceptance or the worker explicitly abandons the edit.
++
++5. **Minimal submission payload**: Because every concurrent edit sends the complete visit content, submissions will be larger than a field-delta approach. Tablet-sync must account for this in offline queue sizing and retry bandwidth costs.
++
++### Review-Export Requirements
++
++The whole-visit revision model creates these obligations for review-export:
++
++1. **Revision comparison interface**: Coordinators need to see two or more complete visit records side-by-side with field-level differences highlighted. The interface must show author, timestamp, and base revision for each competing revision.
++
++2. **Three resolution modes**: Support selecting an existing revision, authoring a new revision, or deferring resolution. Deferred visits remain in unresolved state and are excluded from the next export.
++
++3. **Export filter**: The CSV export must query only visits with status `current`. Unresolved visits are held out until a coordinator resolves them.
++
++4. **Review queue**: Provide a coordinator-facing list of visits with status `unresolved`, sortable by submission time and plot. This queue is the coordinator's primary entry point for Friday export preparation.
++
++5. **Resolution audit trail**: When a coordinator views a resolved visit, show which competing revisions it superseded and who performed the resolution. This supports accountability and lets coordinators revisit past resolution decisions if field notes later surface an error.
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++_(none yet)_
++
++### Deferred
++
++1. **Visit ID and plot association**: Does the client-generated visit UUID encode the plot reference, or is plot_id sent as a separate field in the first submission? Current design shows plot_id in the GET response but not in the POST envelope.
+ 
+-## Open Design Choice: Concurrent Visit Edits
++2. **Stale base revision handling**: If a worker's base_revision_id points to a revision that was once current but is now superseded by a coordinator resolution (not by another worker's edit), should this create a competing revision or require the worker to re-fetch and re-base their edit?
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++3. **Resolution request validation**: Specify behavior when both selected_revision_id and resolved_content are provided, when neither is provided, or when selected_revision_id references a revision not in the competing set.
+ 
+-Two approaches remain credible:
++4. **Mid-resolution concurrency**: If a new worker submission arrives between a coordinator fetching the visit and posting the resolution, should the resolution fail with a conflict error, or should the new submission be automatically added to the competing set?
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++5. **First-submission race**: Can two workers submit the first revision (base_revision_id null) for the same visit UUID concurrently? If so, does the second arrival become a competing revision, or is this an error case that requires visit ID regeneration?
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++6. **History retrieval endpoint**: Specify the GET /visits/{visit-id}/history endpoint mentioned in Architecture. What does it return? Who can access it? Is it limited to coordinators or available to workers?
+ 
+-## Downstream Contract Work
++7. **Partial resolution**: The resolved_revision_ids field suggests a coordinator might resolve only some competing revisions. Clarify whether all competing revisions must be resolved atomically, or if partial resolution is allowed (and if so, what happens to the unresolved subset).
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++8. **Plot reference validation error response**: Specify the HTTP status code and error payload when a submission references a plot_id that doesn't exist in the site catalog.

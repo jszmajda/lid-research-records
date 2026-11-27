@@ -1,0 +1,62 @@
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..2c4f465 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so the cache must hold the reused working set even while a long screening streams one-use sheets through it.
+ 
+ ## Architecture
+ 
+@@ -21,6 +21,46 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB across the resident queues. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### 2Q eviction
++
++Eviction follows the 2Q policy, which separates sheets seen once from sheets that have been reused so that a long sequential screening cannot evict the comparison working set. Three structures hold the policy state, all private to the worker:
++
++- **A1in** — a FIFO queue of resident sheets seen only once since admission. Holds JPEG bytes.
++- **Am** — an LRU queue of resident sheets that have been reused. Holds JPEG bytes.
++- **A1out** — a FIFO list of recently evicted keys only (clip ID, revision, renderer version); it holds no JPEG bytes. It remembers that a key was recently resident so a re-request can be recognised as reuse.
++
++A1in and Am share the 12 GiB byte budget. A tunable split reserves a byte sub-budget for A1in; Am receives the remainder. A1out is bounded by a key count, independent of the byte budget.
++
++**Admission** of a completed sheet for key `K`, evaluated at admission time:
++
++- If `K` is listed in A1out, admit the sheet to the head of Am and remove `K` from A1out — a key the cache recently held has been reused.
++- Otherwise admit the sheet to the head of A1in — a first sighting.
++
++**Cache hit** serving key `K`:
++
++- If `K` is resident in Am, move it to the head of Am (most-recently-used).
++- If `K` is resident in A1in, leave it in place — a hit while in A1in does not promote it to Am.
++
++**Reclaiming space** before admission, repeated until the incoming sheet fits the budget:
++
++- If A1in is at or above its byte sub-budget, evict the tail (oldest) sheet of A1in and record its key at the head of A1out; if A1out is at its key-count cap, drop its oldest key.
++- Otherwise evict the LRU tail of Am; its key is not recorded in A1out.
++
++An A1out hit does not mean the sheet's bytes are present — only its key is remembered. A request whose key is in A1out but not resident is an ordinary cache miss that renders (or joins a pending job); the only difference is that, once rendered, the sheet is admitted to Am rather than A1in. The external interface, render-queue concurrency, and 12 GiB disk budget are unchanged by this policy.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (A1in / A1out / Am) | LRU; frequency-based eviction with aging | Protects the reused comparison working set from one-off screening scans. LRU is cheapest but a long sequential screening evicts comparison sheets. Aged frequency counts retain popular clips but add per-entry counter maintenance and lag a project switch. The cost of 2Q is two resident queues plus a ghost key list and a queue-size split to tune — accepted to protect comparison sheets during big screenings. |
++| A1in-resident hit | No promotion to Am; a sheet becomes reused only by being evicted and re-admitted via A1out | Promote on any second reference | A clip must leave and return to count as reused, which is what lets A1in absorb a one-pass scan without promoting any of it into Am. |
++| Resident split and ghost cap | A1in byte sub-budget = 25% of 12 GiB (3 GiB); A1out capped at 6000 keys | Fixed entry counts; one shared budget with no split | A byte budget suits variable ~2 MiB sheets. 25% and a ghost list roughly the size of the full cache in entries are the 2Q literature's starting ratios, to be retuned against real workloads (see Open Questions). |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Tune the A1in byte split and the A1out key cap against per-production workloads; the screening/comparison mix varies by production.
++2. Queue state is in-memory. On worker restart all sheets re-enter as first sightings in A1in; the cache is not authoritative and rebuilds naturally, so persisting queue metadata across restarts is deferred.

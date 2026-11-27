@@ -1,0 +1,32 @@
+*Well-structured design tree at pre-implementation stage, with an unrecorded tenet conflict and missing workflow directives.*
+
+**Scorecard**
+- ✓ Design structure & mutation hygiene — clean `docs/intent/` node-as-folder layout, crisp HLD boundaries, and zero history residue
+- ✓ EARS syntax & scope — concise, event- and state-driven specs across both components
+- ⚠ Tenet alignment & decision capture — near-term cancellation search works against *First asked, first served*, and key queue-priority choices lack `Decisions & Alternatives` entries
+- ⚠ LLD sufficiency — open behavioral edges around expired-offer rematching, ordinary opening publication, and intake audit/idempotency rules
+- ✗ Arrow completeness — all 15 specs carry `[x]` markers, while no test or code files exist in the repository yet
+- ⚠ Configuration — `CLAUDE.md` declares `Full` mode and version `1.4.0` without the LID workflow directives
+
+The HLD and both component designs are clean, present-tense, and free of implementation bleed; the highest-leverage next steps are reconciling `CLAUDE.md` via `/update-lid` and resolving the unrecorded tension between near-term cancellation search and your *First asked, first served* tenet before writing tests and code.
+
+**Findings (9 total · 4 high · 3 medium · 2 low)**
+- **F1 (high):** `CLAUDE.md` has the `## LID` block (`Mode: Full`, `Version: 1.4.0`) without the LID workflow directives; consider running `/update-lid` to reconcile · *modes are declared, not inferred* (the instruction file anchors both mode and phase discipline for every session)
+- **F2 (high):** All 15 specs in `intake-specs.md` and `fulfillment-specs.md` are marked `[x]`, while the `Tests` and `Code` phases are not yet present in the repository · *canonical arrow shape — with a recursive design layer* (intent walks `HLD → LLDs → EARS → Tests → Code`, with spec status matching downstream reality)
+- **F3 (high):** In `docs/intent/fulfillment/fulfillment-design.md` (`FILL-003`, `FILL-004`), publishing canceled openings `<= 36 hours` away immediately to portal checkout and delaying the `enteredAt` registry scan by 20 minutes lets any signed-in portal user pass earlier waitlisted entries during close-in cancellations, conflicting with the HLD tenet *First asked, first served* without a recorded exception · *tenets capture forward-looking preference* and *coherence is adjacency* (leaf mechanisms lean with the HLD's tenets unless an explicit trade-off is recorded)
+- **F4 (high):** The `<= 36h` open-portal window and 20-minute delayed scan in `docs/intent/fulfillment/fulfillment-design.md` sit in `## Design` prose with no `Decisions & Alternatives` record of what alternative was set aside or what cost was accepted · *docs carry current intent, written to be read cold* (choices a cold reader would question or try to reverse need their reasoning captured alongside the design)
+- **F5 (medium):** `docs/intent/intake/intake-design.md` (`INTAKE-005`, `INTAKE-006`) retains `enteredAt` across time, site, and accessibility edits while resetting it on service changes, sitting in `## Design` prose with no `Decisions & Alternatives` entry capturing why that boundary was drawn or its queue-fairness trade-off · *docs carry current intent, written to be read cold* (non-obvious policy choices stay legible when their rejected alternatives and accepted costs are recorded)
+- **F6 (medium):** `docs/intent/fulfillment/fulfillment-design.md` and `fulfillment-specs.md` leave open whether an expired offer excludes that entry from immediate rematching on the same opening (`FILL-002`), how ordinary `> 36h` openings with no waitlist match reach portal search (`FILL-001`, `FILL-004`), whether offer creation writes to the outbox (`FILL-007`), and whether `FILL-005` filters to `active` entries · *LLDs close enough of the solution space* (designs and specs narrow behavioral edges so two agents land on compatible implementations)
+- **F7 (medium):** `docs/intent/intake/intake-design.md` and `intake-specs.md` leave open how idempotency key expiry and payload mismatches behave (`INTAKE-004`) and what audit fields withdrawal events record when staff act for callers (`INTAKE-007` vs. HLD Goal 3) · *LLDs close enough of the solution space* (closing edge cases upstream prevents divergent guesses during implementation)
+- **F8 (low):** `docs/high-level-design.md` lists four `## Tenets` as unordered bullets even where fairness and refill speed can pull in opposite directions, and *Clinical fit precedes utilization* states a hard eligibility requirement (`FILL-006`) rather than a tie-breaker with a defensible opposite · *tenets capture forward-looking preference* (tenets work best as ordered tie-breakers between two genuinely defensible choices)
+- **F9 (low):** `docs/intent/fulfillment/fulfillment-specs.md` uses the `FILL-` prefix while `fulfillment-design.md` omits `prefix: FILL` frontmatter bridging the component name to its spec namespace · *effective intent-tree alignment* (`prefix:` frontmatter makes abbreviated spec IDs resolve unambiguously to their owning leaf LLD)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/intake/intake-design.md`, `docs/intent/intake/intake-specs.md`, `docs/intent/fulfillment/fulfillment-design.md`, `docs/intent/fulfillment/fulfillment-specs.md` (all 6 files in the repository)
+- Enumerated: 1 HLD (4 tenets, 3 goals, 2 components), 2 leaf LLDs (8 `Decisions & Alternatives` rows, 0 decision docs), 2 spec files (15 unique EARS spec IDs: `INTAKE-001`–`007`, `FILL-001`–`008`), no `docs/arrows/` overlay
+- Linkage & downstream phases: 0 test files, 0 implementation files, 0 `@spec` references
+- Defaults applied: proceeded with a full review in `Full` mode (declared in `CLAUDE.md`, and the dispatch default when LID directives are absent) and rendered the report inline with no file edits per `/lid-coach`'s advisory default
+
+Want me to walk through the findings in detail, focus on a priority tier or theme (such as the `fulfillment` tenet tension and open edges), or dig into specific items together?
+
+If you have broader questions about using LID on Visit Planner — ordering tenets, deciding between a fuller `Decisions & Alternatives` row vs. a decision doc, or walking `intake` and `fulfillment` into tests-first implementation — I can help with those too.

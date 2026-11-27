@@ -1,0 +1,7 @@
+Wrote `docs/decisions/change-delivery-approach.md` and linked it from the HLD's Key Design Decisions entry.
+
+The doc lays out the stakes (the route fixes what the change store retains, what delivery operates, and what the browser must do to reconnect), the five criteria that actually move the choice — vendor coupling, recurring fees, and operational burden owned marked *major*; latency headroom and steady-state read load *moderate*/*minor* — and the three routes as their advocates would describe them. Polling scores strong on operational simplicity but weak on latency and read load; hosted service scores strong on connection ops but weak on coupling and fees; self-hosted sockets is strong on coupling, fees, latency, and read load, and weak only on the connection/reconnect burden the project accepts. The tenet that both self-hosted and managed infrastructure are permitted is named as what keeps all three in contention, so the selection weighs burden against coupling rather than ruling a route out by principle.
+
+One open item from my earlier message still stands: `docs/intent/access/access-design.md` says authorization is "independent of the still-open change-delivery approach," which is now stale, and it sits in a different segment, so I have not touched it. Update that line as a cross-segment cascade, or leave it for the Access session?
+
+Approve the decision doc and HLD as they now stand, and tell me how to handle the Access line.

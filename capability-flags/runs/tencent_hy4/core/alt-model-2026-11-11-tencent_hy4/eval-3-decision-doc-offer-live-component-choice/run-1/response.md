@@ -1,0 +1,1 @@
+Now let me explore the current project state to see what exists from "last session."

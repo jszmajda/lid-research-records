@@ -1,0 +1,130 @@
+diff --git a/docs/intent/previews/decisions/cache-replacement-policy.md b/docs/intent/previews/decisions/cache-replacement-policy.md
+new file mode 100644
+index 0000000..cfd384c
+--- /dev/null
++++ b/docs/intent/previews/decisions/cache-replacement-policy.md
+@@ -0,0 +1,74 @@
++---
++node: previews
++---
++
++# Decision: Preview cache replacement policy
++
++## Context
++
++The preview worker keeps a private cache of rendered JPEG contact sheets bounded at 12 GiB. Editors alternate two access shapes against the same cache: long sequential screenings that touch many sheets once each, and comparison sessions that repeatedly revisit a small working set. A replacement policy must decide which sheets to evict when an admission would exceed the budget. The sheets differ from an ordinary page cache in one way that shapes the choice: a miss re-renders in about 450 ms on the worker rather than faulting from a backing store, so eviction costs recomputation, not a stall on slow storage.
++
++The external contract (200 / 202 / 404), the cache key, request deduplication, the FIFO render queue and its four-job concurrency, and the 12 GiB budget are fixed independently of this decision — every option here honors them and keeps all replacement bookkeeping private to the worker, so they are background, not differentiators.
++
++## Decision Elements
++
++No gate eliminates any option in contention: all three run on the single eight-core worker, stay within 12 GiB, and expose nothing beyond the fixed interface. The decision turns entirely on weighted criteria.
++
++- **Scan resistance** (major) — keeping a repeatedly-revisited comparison set resident while a long single-touch screening streams through the cache. This is the workload the worker most needs to protect; it is a capability the design treats as major even though no current HLD tenet names it. (Candidate missing tenet — see Selection.)
++- **Adaptation on project switch** (moderate) — how promptly a now-stale working set is released when editors move to a different production.
++- **Bookkeeping cost** (moderate) — per-entry or periodic maintenance the policy imposes on the worker (counters, aging sweeps, segment moves).
++- **Tuning burden** (minor) — how many parameters must be chosen and retuned as workloads shift.
++
++## Options in the Domain
++
++### LRU
++
++**Description.** A single recency-ordered list. Every access moves an entry to the most-recent position; eviction removes the least-recently-used entry until the cache is within budget. No parameters, one data structure.
++
++**Analysis.**
++- Scan resistance: **weak**. A sequential screening longer than the cache touches enough fresh sheets to push a comparison set out of the recency window; the reused set is evicted even though it will be wanted again.
++- Adaptation on project switch: **strong**. A new working set occupies the recent end immediately and the prior project's sheets fall off the tail.
++- Bookkeeping cost: **strong**. One move-to-front per access, no counters, no sweeps.
++- Tuning burden: **strong**. No parameters.
++
++**Summary.** Cheapest and most responsive, but a long screening evicts exactly the sheets comparison sessions reuse.
++
++### Frequency-based eviction with aging
++
++**Description.** Each entry carries an access counter; eviction prefers the lowest count. Counts are periodically decayed (aging) so that once-popular entries do not become permanently unevictable. Retention tracks how often, not how recently, a sheet is used.
++
++**Analysis.**
++- Scan resistance: **partial**. Single-touch screening sheets accrue low counts and are preferred for eviction, protecting a frequently-used set — but a screening long enough to raise some counts, or a comparison set not yet counted up, blurs the line.
++- Adaptation on project switch: **weak**. A prior project's sheets carry high counts that persist until aging decays them, so stale favorites linger past the switch.
++- Bookkeeping cost: **weak**. A counter per entry plus a recurring aging sweep across the cache.
++- Tuning burden: **partial**. The aging rate (decay factor and interval) must be chosen and retuned.
++
++**Summary.** Best raw retention of repeatedly popular sheets, paid for with counter maintenance and slow release of yesterday's favorites.
++
++### Simplified 2Q
++
++**Description.** Two resident segments share the one 12 GiB budget: **A1**, recent first-use entries in FIFO order, and **Am**, reused entries in LRU order. A newly rendered sheet enters A1. A second touch of an A1 entry promotes it to Am; touches within Am reorder it by recency. When over budget, eviction takes A1's oldest entry while A1 exceeds its target share of the budget, and otherwise takes Am's least-recently-used entry. One parameter: A1's target share.
++
++**Demonstration.** A 2,000-sheet screening touches each sheet once; every sheet enters A1 and is evicted from A1's tail as the scan advances, so Am — holding the comparison set that earned a second touch — is never reached. A comparison session revisiting 30 sheets promotes them into Am on their second request, where screening traffic cannot evict them.
++
++**Analysis.**
++- Scan resistance: **strong**. Single-touch traffic is confined to A1 and never promoted, so it cannot evict the reused set in Am by construction.
++- Adaptation on project switch: **partial**. A new project's reused sheets must earn a second touch to reach Am, and the old project's Am entries are released by LRU only once A1 is at its share; adaptation is a step behind LRU but not counter-bound.
++- Bookkeeping cost: **partial**. Two segments and a segment move on promotion — more than LRU's single list, but no per-entry counter and no periodic sweep.
++- Tuning burden: **partial**. One parameter (A1's target share) to set and occasionally retune; fewer knobs than an aging schedule.
++
++**Summary.** Protects the reused set from scans structurally, at the cost of a second segment and one size parameter.
++
++## Selection
++
++**Chosen: simplified 2Q.**
++
++Scan resistance is the major criterion, and 2Q is the only option strong on it: it keeps the comparison set resident through a long screening *by construction* — single-touch sheets never leave A1 — rather than probabilistically, as LRU and frequency-with-aging do. LRU is strongest on every other criterion but weak on the one that matters most, and the failure is the exact workload the worker exists to serve. Frequency-with-aging reaches the goal only partially while scoring weak on both bookkeeping and project-switch adaptation, so it is dominated here.
++
++2Q's costs fall on the two moderate and minor criteria: a second segment and a promotion move (moderate bookkeeping, but no counters or sweeps), and one size parameter (minor tuning). Accepting those to secure scan resistance is the trade this decision makes. Its one concession is moderate: adaptation on a project switch lags LRU by the time it takes a new working set to earn promotion into Am — acceptable because a project switch is infrequent relative to the daily screening/comparison mix.
++
++Implications of committing:
++- Obligates a replacement bookkeeping choice — A1's target share of the budget — whose value is left open and tunable without interface or spec change.
++- Forecloses nothing at the interface: the 200 / 202 / 404 contract, dedup, render queue, and 12 GiB budget are untouched, and the policy stays private to the worker.
++
++This decision honors the HLD tenet that replacement bookkeeping stays private to the preview worker; no option threatens it. It cites no tenet as its *driver*, because the driving concern — protecting the reused comparison set from scan traffic — is carried today only by the Problem statement's description of the workload. That is the signal the template names: the project may be missing a tenet (e.g., *a long single-touch screening must not evict a reused working set*). Surfaced for the HLD's owner to accept or decline; this doc does not add it.
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..100bf10 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The replacement policy must keep a reused comparison set resident while a long sequential screening streams one-use sheets through the cache, so the design protects twice-touched entries from single-touch scan traffic.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,35 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement (2Q)
++
++The cache is replaced by the simplified 2Q policy: two resident segments share the single 12 GiB budget.
++
++- **A1** — recent first-use entries, ordered first-in-first-out.
++- **Am** — reused entries, ordered least-recently-used.
++
++A1 is held to a target share of the budget, `A1_TARGET_FRACTION`, with Am holding the remainder. Both segments store rendered JPEG bytes; the split is a target measured in bytes against the shared 12 GiB, not a second disk budget.
++
++**On admission** (a render completes and the sheet is not already resident): the sheet enters A1 as its most-recent entry.
++
++**On a cache hit:**
++
++- If the entry is in A1, move it to Am as Am's most-recent entry. A second touch is what marks an entry reused and promotes it out of scan-exposed A1.
++- If the entry is in Am, move it to Am's most-recent position (LRU touch).
++
++**On eviction** (admitting a sheet would exceed 12 GiB): while the cache is over budget, if A1's resident bytes exceed `A1_TARGET_FRACTION` of the budget, evict A1's oldest entry; otherwise evict Am's least-recently-used entry. A long single-touch screening therefore churns within A1 and leaves Am's reused comparison set resident.
++
++The external interface, the FIFO render queue and its four-job concurrency, the cache key, deduplication, and the 12 GiB budget are all unchanged by this policy. All 2Q segments, ordering, and the size split are private to the worker; no other node observes them.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | Simplified 2Q (A1 first-use + Am reused) | LRU; frequency-based eviction with aging | 2Q keeps a reused comparison set resident during long single-touch screenings, the workload the worker must protect. LRU is the cheapest but a sequential screening evicts the comparison set. Frequency-with-aging retains popular clips but adds per-entry counter maintenance and lags a project switch. 2Q's cost — two segments and one size-split parameter — was accepted to protect comparison sheets during big screenings. See [`decisions/cache-replacement-policy.md`](decisions/cache-replacement-policy.md). |
++| 2Q variant | Simplified 2Q: A1 resident + Am, one size parameter | Full 2Q with an A1out ghost queue of evicted keys | A miss re-renders in ~450 ms rather than faulting from a backing store, so a non-resident ghost queue buys little; the simplified variant keeps bookkeeping to one resident split and one parameter. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. `A1_TARGET_FRACTION` value. A smaller A1 protects the reused set harder but admits fewer first-use entries before they can earn a second touch; a larger A1 adapts faster to a new working set but lets a screening reach deeper toward Am. Proposed default: 25% of the 12 GiB budget (3 GiB). Tunable without interface or spec change.

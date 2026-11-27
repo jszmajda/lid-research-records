@@ -1,0 +1,1 @@
+Now let me read all the project files to understand the current state.

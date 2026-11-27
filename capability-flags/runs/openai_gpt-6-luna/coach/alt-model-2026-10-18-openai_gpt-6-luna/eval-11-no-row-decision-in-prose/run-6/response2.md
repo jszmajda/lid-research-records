@@ -1,0 +1,9 @@
+`job-queue-design.md` says the queue exists only in process memory. Uploaded G-code files are stored on disk, but the queue records that point to those files are not. On restart, the service recovers jobs already running on printers; accepted jobs still waiting in a queue are lost, and members must resubmit them.
+
+That’s likely to matter in this project: the queue LLD describes unattended OS updates and power interruptions, while the HLD promises that members can upload and walk away and aims for overnight printing. The current design makes that promise unreliable across a service restart. `QUEUE-004` covers recovering a printer’s current job, but doesn’t say what happens to accepted jobs waiting in the queue.
+
+My recommendation is to make this tradeoff explicit before implementation. With the goals written in the HLD, persisting the pending queue is the most direct way to honor the upload-and-walk-away promise. That could mean saving each accepted job’s queue details and its reference to the on-disk G-code, then restoring those entries at startup. The design should also define when a job counts as accepted and how startup avoids losing or dispatching it twice.
+
+The choice is yours, though: you could instead keep the in-memory queue and explicitly narrow the promise, making the restart/resubmission behavior clear to members. Either way, capture the choice in the job-queue design’s Decisions & Alternatives table—including the alternative and the cost you’re accepting. That addresses *docs carry current intent* (design docs should explain live tradeoffs); resolving the conflict also addresses *tenet cascade* (component designs should align with the HLD’s preferences).
+
+Once you settle the direction, update the queue LLD and the relevant specs, then write tests for restart recovery or the documented resubmission behavior before implementing it.

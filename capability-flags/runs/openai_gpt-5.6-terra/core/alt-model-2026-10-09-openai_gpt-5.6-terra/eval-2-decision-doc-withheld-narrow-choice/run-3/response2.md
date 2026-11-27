@@ -1,0 +1,3 @@
+I agree. This is a durable, non-obvious choice among credible alternatives with competing criteria: scan resistance, retention of comparison sheets, adaptation after a project switch, and operational complexity. A cold reader could reasonably reconsider it, so it clears the threshold for a decision doc.
+
+If you approve the HLD update, I’ll draft `docs/intent/previews/decisions/2q-eviction.md` during the preview-design phase and link it from the preview LLD’s Decisions & Alternatives table.

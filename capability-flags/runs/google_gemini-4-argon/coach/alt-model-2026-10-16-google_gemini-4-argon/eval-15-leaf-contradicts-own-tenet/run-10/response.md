@@ -1,0 +1,29 @@
+**Bootstrapping — design and spec layers in place, with a live tenet tension and missing code/tests.**
+
+**Scorecard**
+- ✓ Intent-tree alignment — clean HLD-to-LLD-to-spec mapping across both components (`HOLDALLOC-*` and `PICKUP-*`)
+- ✓ Mutation hygiene — docs are crisp, written cold, and free of change-narration or conversational residue
+- ⚠ Tenet & decision coherence — local-branch allocation preference directly trades against the first HLD tenet without a recorded decision
+- ⚠ Configuration — `CLAUDE.md` carries the `## LID` mode block but lacks the LID workflow directives
+- ✗ Arrow completeness — all 13 specs are marked `[x]`, but no tests or implementation code exist in the repository yet
+
+Clean, well-scoped design docs and EARS specs are in place for both components; the highest-value next steps are resolving the silent conflict between local-branch allocation and the FIFO tenet, reconciling `CLAUDE.md` via `/update-lid`, and building out the test and code layers of the arrow.
+
+**Findings (7 total · 4 high · 2 medium · 1 low)**
+- **F1 (high):** `hold-allocation-design.md` (line 11) and `HOLDALLOC-003` allocate checked-in copies to scanning-branch holds ahead of older holds at other branches, directly contradicting the HLD's first tenet ("Waiting is honored in sequence. Whoever asked for a title sooner receives it sooner; nobody's wait is lengthened by a patron who asked after them") with no exception recorded · *tenets capture forward-looking preference* (leaf mechanisms must lean the way HLD tenets say to lean, or explicitly record the trade-off)
+- **F2 (high):** The choice in `hold-allocation-design.md` (line 11) to prefer scanning-branch holds over county-wide FIFO is a live decision that a cold reader would immediately question against the HLD, but it appears only in body prose ("This keeps most copies off the courier van, which runs once a day") with no row in the Decisions & Alternatives table · *docs carry current intent, written to be read cold* (decisions that remain live and questionable once landed need a Decisions-table row capturing what was given up and the accepted cost)
+- **F3 (high):** All 13 specs across `hold-allocation-specs.md` and `pickup-notices-specs.md` are marked `[x]`, but the repository contains no test files or application code · *canonical arrow shape — with a recursive design layer* (`HLD → LLDs → EARS → Tests → Code` requires tests and code to complete the arrow) and *tests before code* (tests preload the use of the system and cite `@spec` IDs before implementation)
+- **F4 (high):** `CLAUDE.md` has the `## LID` mode marker (`Mode: Full`), but is missing the standard `linked-intent-dev` workflow directive block — consider running `/update-lid` to reconcile · *modes are declared, not inferred* (explicit directives and mode configuration keep agent behavior anchored)
+- **F5 (medium):** In `docs/high-level-design.md` (lines 13–17), the third tenet ("Patrons hear once, clearly. Each event produces one message...") and fourth tenet ("Hold history is not kept. A closed hold's record is deleted...") are phrased as triggered behavioral rules (`PICKUP-002`, `PICKUP-003`, `PICKUP-005`) rather than tie-breaking leans with defensible opposites, and the tenets list is unordered despite potential conflicts (such as sequence vs. operational speed) · *tenets capture forward-looking preference* (a tenet is an ordered one-line tie-breaker for unanticipated decisions, not a spec in disguise)
+- **F6 (medium):** `pickup-notices-design.md` (line 11) says when a pickup window lapses "the hold closes, and the copy is re-run through allocation", whereas `PICKUP-004` and `PICKUP-005` defer closing the hold, deleting its record, and reallocating until staff physically scan the copy off the shelf from the next morning's pull list · *coherence is adjacency* (each level of the arrow should agree with its adjacent level so readers don't have to guess whether expiry happens at timer lapse or physical scan)
+- **F7 (low):** Neither `hold-allocation-design.md` nor `pickup-notices-design.md` declares a `prefix:` frontmatter field (`HOLDALLOC` / `PICKUP`) or links directly to its companion `*-specs.md` file · *effective intent-tree alignment* (explicit prefix metadata on leaf LLDs makes the root-to-leaf spec boundary unambiguous)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/hold-allocation/hold-allocation-design.md`, `docs/intent/hold-allocation/hold-allocation-specs.md`, `docs/intent/pickup-notices/pickup-notices-design.md`, `docs/intent/pickup-notices/pickup-notices-specs.md`
+- Enumerated: 1 HLD, 2 LLDs, 2 spec files (13 EARS specs total: 7 `HOLDALLOC-*`, 6 `PICKUP-*`), 0 arrow overlay files (`docs/arrows/` absent), 0 test files, 0 source code files
+- Linkage metric: 0 `@spec` references across 13 unique spec IDs (no test or code files present yet)
+- Non-interactive defaults taken: dispatched to a **full review** (default Full mode) per the dispatch rule for projects with LID-shaped artifacts (`docs/high-level-design.md`, `docs/intent/*-design.md`, `docs/intent/*-specs.md`) where the instruction file is missing the `linked-intent-dev` directive prose; rendered the report inline without persisting files to disk or editing project files (advisory posture default).
+
+Want me to walk through the findings in detail, focus on a theme or priority, or work through specific items together? You can also pick a specific finding to dig into.
+
+If you have broader questions about using LID for your project — multi-repo setups, where PRDs fit, mode transitions, what to do when a segment grows too large — I can help with those too.

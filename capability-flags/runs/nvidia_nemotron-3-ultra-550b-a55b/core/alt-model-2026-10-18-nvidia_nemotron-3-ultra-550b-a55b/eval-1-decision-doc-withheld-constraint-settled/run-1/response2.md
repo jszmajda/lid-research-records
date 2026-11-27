@@ -1,0 +1,1 @@
+Table row is sufficient — the HLD tenet ("no runtime network access") makes the other options non-starters. A cold reader would see the tenet and the choice reads as obvious, not live. Decision doc would be overkill.

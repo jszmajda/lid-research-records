@@ -1,0 +1,7 @@
+My honest take: a Decisions row, not a full doc — but it's your call and I'll write it either way.
+
+Why I land there: the test is the *landed* state, not the deliberation. Three meetings and 180 messages are a symptom, not the criterion — the skill is explicit that a row can come out of a long argument. Looking forward: a cold reader of the previews LLD will see "2Q" and wonder "why not LRU?" — one rationale line answers that (*2Q keeps reused comparison sheets through sequential screening scans; LRU is cheaper but scan-vulnerable; aged frequency counts lag project switches*). And the choice fails the doc's bar structurally: every option's changes stay inside the preview cache, so nothing else in the system gets sized around it — the skill excludes node-local choices from docs "however long the debate ran," precisely because people say yes to offers even when the row would do.
+
+If you still want the full doc — the tradeoffs laid out at re-litigation resolution — say so and I'll write `docs/intent/previews/decisions/cache-eviction-policy.md` at Phase 2, linked from the LLD's Decisions row. Otherwise the row alone lands.
+
+Still at the Phase 1 stop: **approve (or give numbered feedback) to proceed to Phase 2**, and tell me row-only or row + decision doc.

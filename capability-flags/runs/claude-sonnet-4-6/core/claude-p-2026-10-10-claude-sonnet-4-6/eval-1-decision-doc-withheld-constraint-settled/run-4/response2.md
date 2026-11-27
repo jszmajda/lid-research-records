@@ -1,0 +1,3 @@
+No decision doc needed here. The skill's test is whether a cold reader would be *tempted to reverse* the choice — and the HLD tenet ("All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted") settles it. A cold reader sees the tenet, sees both network-dependent options ruled out, and doesn't re-litigate it. The skill also says explicitly: don't offer a doc for a choice that "an inherited constraint settles, however long the debate ran."
+
+The Decisions row already captures the rationale in full. The debate felt close because the tradeoffs were real, but the landing is clear. Row is the right record.

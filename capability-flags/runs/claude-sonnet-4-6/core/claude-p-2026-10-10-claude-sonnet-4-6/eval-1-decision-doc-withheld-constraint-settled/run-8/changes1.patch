@@ -1,0 +1,101 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..5b6afa4 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Uses a local embedded SQLite index.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..174fe7f 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -13,12 +13,80 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, activation, and lookup all belong to this node. The lookup backend is a local embedded SQLite index.
++
++## Index Structure
++
++The active snapshot lives in a single SQLite file (`snapshot.db`). It contains two tables:
++
++**`equipment` table**
++
++| Column | Type | Notes |
++|---|---|---|
++| serial_normalized | TEXT PRIMARY KEY | Whitespace-trimmed, ASCII-uppercased form of the serial number |
++| serial_original | TEXT NOT NULL | The serial as it appears in the snapshot |
++| description | TEXT NOT NULL | |
++| calibration_date | TEXT NOT NULL | ISO 8601 date (YYYY-MM-DD) |
++| due_date | TEXT NOT NULL | ISO 8601 date (YYYY-MM-DD) |
++
++**`snapshot_meta` table**
++
++| Column | Type | Notes |
++|---|---|---|
++| id | INTEGER PRIMARY KEY | Always 1; enforces a single-row invariant |
++| snapshot_date | TEXT NOT NULL | ISO 8601 date from the snapshot manifest |
++| schema_version | TEXT NOT NULL | |
++
++The database opens in WAL mode to allow concurrent reads without blocking during the activation rename.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import proceeds in three stages against a staging file:
++
++1. **Validate**: verify the manifest signature using the bundled public key; confirm the schema version is supported; stream-scan records and reject on any duplicate `serial_normalized` value or any record missing a required field.
++2. **Build**: write all records into `snapshot.db.staging`, a fresh SQLite file at a path beside `snapshot.db`. Write `snapshot_meta` last. Any write error aborts and deletes the staging file.
++3. **Activate**: rename `snapshot.db.staging` to `snapshot.db`. If anything fails before the rename, delete `snapshot.db.staging` and leave the current `snapshot.db` untouched.
++
++A crash after the rename leaves the new snapshot active. A crash before the rename leaves the previous snapshot active; the staging file, if present, is cleaned up at the start of the next import attempt.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++`findBySerial(serial)` normalizes the input — trims surrounding whitespace, uppercases ASCII letters, leaves punctuation and non-ASCII characters unchanged — then issues:
++
++```sql
++SELECT e.serial_original, e.description, e.calibration_date, e.due_date,
++       m.snapshot_date
++FROM equipment e
++JOIN snapshot_meta m ON m.id = 1
++WHERE e.serial_normalized = ?
++```
++
++A row result returns `Found(record, snapshotDate)`. No row returns `NotFound(snapshotDate)` using `snapshot_date` from `snapshot_meta`. Normalizing at ingest makes the lookup a direct primary-key scan.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory; managed search service | SQLite is a local file — lookups need no network and no running service, which aligns with the HLD tenets requiring all lookups to use files on the kiosk. The other options require lab network access or external connectivity, adding service-timeout complexity and dependency on infrastructure outside this node. 90,000 records at ≤150 MB are well within SQLite's operating range without tuning. |
++| Staging strategy | Build to `snapshot.db.staging`, rename to `snapshot.db` | In-place rebuild; two-slot rotation | Rename is atomic on POSIX filesystems. In-place rebuild risks a partially-written active database on crash. Two-slot rotation needs a "which slot is active" pointer file, adding its own failure mode. |
++| Normalization storage | Store `serial_normalized` as primary key; store `serial_original` separately | Normalize only at query time | Normalizing on ingest makes lookup a direct primary-key scan with no per-query transformation. Storing `serial_original` preserves the snapshot's representation for display and audit. |
++| WAL mode | Enabled | Default journal mode (DELETE) | WAL allows readers to proceed without blocking during the brief activation window. Cost: one extra `.wal` file beside `snapshot.db`. |
++| Required-field validation | Reject import if any record is missing a required field | Accept and coerce nulls | A missing field produces a broken certificate; failing early at import is more recoverable than surfacing bad data during lookup. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++*(none yet)*
++
++### Deferred
++
++1. **Rename atomicity on Windows**: `rename(2)` is atomic on POSIX; `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` is not guaranteed atomic across drives on Windows. If kiosks run Windows, the activation step may need a transactional NTFS approach or a pointer-file fallback.
++2. **SQLite connection lifecycle**: whether to use a persistent open connection, a per-request open/close, or a small connection pool; depends on the kiosk's concurrency model and UI framework.
++3. **Startup cleanup**: whether to check for and delete a leftover `snapshot.db.staging` on registry initialization, before the first import attempt is made.
++4. **Disk space error handling during staging**: the HLD allows snapshots up to 150 MB; staging requires enough free space for a second copy. Behavior when disk space is exhausted mid-build is not specified.
++
++## References
++
++- HLD: `docs/high-level-design.md`
++- Certificates interface consumer: `docs/intent/certificates/certificates-design.md`

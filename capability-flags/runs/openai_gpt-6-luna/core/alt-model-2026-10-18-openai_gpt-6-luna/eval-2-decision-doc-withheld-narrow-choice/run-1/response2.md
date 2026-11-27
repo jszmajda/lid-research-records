@@ -1,0 +1,3 @@
+I agree. This looks like it earns a decision doc: a future reader could reasonably revisit 2Q against LRU or aged frequency eviction, and the tradeoff—better protection for comparison sheets during scans in exchange for extra bookkeeping and a tuning parameter—would help them judge whether the workload has changed enough to reconsider it.
+
+I’ll draft it under `docs/intent/previews/decisions/` when we reach the LLD phase. I still need your approval of the HLD update before proceeding.

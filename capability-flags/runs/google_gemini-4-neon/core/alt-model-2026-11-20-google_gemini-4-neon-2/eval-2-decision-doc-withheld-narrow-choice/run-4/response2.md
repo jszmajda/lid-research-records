@@ -1,0 +1,7 @@
+I'd recommend keeping it as the `Decisions & Alternatives` row in `previews-design.md` rather than writing a full decision doc:
+
+- **Length of debate isn't the bar.** The test is forward-looking from the landed design: *what does a cold reader need so they don't re-litigate a load-bearing commitment?* A long argument often still lands cleanly as a table row.
+- **The choice is completely local to `previews`.** No other node is sized around 2Q — `review-api` sees only the fixed `200`/`202`/`404` contract, and the render queue concurrency and 12 GiB cap are unchanged. If pilot data ever points back to LRU or aged frequency, swapping it stays inside the preview worker.
+- **The row already carries the trade-off.** A cold reader wondering "why 2Q?" gets the full picture in one place (scan protection for comparison sheets vs. extra queue bookkeeping and a tunable split) without adding a standalone artifact to maintain.
+
+That said, it's your call — if you think future readers will still try to re-open the policy without the full criteria and per-option breakdown written out, say the word and I'll draft `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from `previews-design.md`. Otherwise, let me know how you'd like to triage the Phase 2 edge-case gaps above so we can finalize the LLD and move to Phase 3.

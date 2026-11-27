@@ -1,0 +1,3 @@
+Yes—I think a full decision doc earns its place. A future maintainer could reasonably question why 2Q’s scan resistance is worth its extra queue bookkeeping and tuning over LRU. The tradeoffs are substantial enough that a one-line rationale may not settle that question.
+
+I’d put it under `docs/intent/previews/decisions/` and link it from the previews LLD. I’ll carry that into the design review. Please confirm the Phase 1 HLD check so I can proceed.

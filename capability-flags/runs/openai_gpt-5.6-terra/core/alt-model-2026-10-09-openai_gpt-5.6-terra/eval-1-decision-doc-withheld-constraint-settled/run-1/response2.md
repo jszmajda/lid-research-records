@@ -1,0 +1,3 @@
+A separate decision doc would be overkill.
+
+The existing **Lookup backend** row in the registry LLD is sufficient because the HLD already rules out runtime network access, the decision is contained within the registry component, and the certificate interface does not change. The row preserves the alternatives and rationale a future reader needs without creating a standalone artifact for a settled implementation choice.

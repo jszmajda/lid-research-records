@@ -1,0 +1,110 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..4053d10 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup via a local embedded SQLite index.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..c0c142f 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,86 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Design Philosophy
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
+-## Architecture
++The registry must serve lookups entirely from kiosk-local storage — no network access during normal operation. A local embedded SQLite index satisfies the 250 ms lookup target on modest hardware, survives power cycles without a service to restart, and permits atomic snapshot replacement by staging the new index before activating it.
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++## Interface
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of internal implementation. The certificates node uses only this interface and never reads registry storage directly.
++
++## SQLite Index Layout
++
++Two SQLite database files live in the registry data directory:
++
++- `active.db` — the database currently serving lookups
++- `staging.db` — built during an in-progress import; absent when no import is running
++
++Schema used in both files:
++
++```sql
++CREATE TABLE equipment (
++    serial           TEXT PRIMARY KEY,
++    description      TEXT NOT NULL,
++    calibration_date TEXT NOT NULL,
++    due_date         TEXT NOT NULL
++);
++
++CREATE TABLE metadata (
++    snapshot_date   TEXT NOT NULL,
++    schema_version  TEXT NOT NULL
++);
++```
++
++`equipment.serial` is the PRIMARY KEY; SQLite creates a B-tree index on it automatically. No additional index is needed for single-column exact-match lookup.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++1. Delete any `staging.db` left by a prior failed import before starting.
++2. Verify the snapshot signature against the bundled public key; reject and report on failure.
++3. Confirm the schema version is in the supported set; reject and report on unsupported versions.
++4. Build `staging.db`: open a new SQLite database, insert all records into `equipment`, and write snapshot metadata into `metadata`.
++5. Validate `staging.db`: the PRIMARY KEY constraint on `serial` causes insert to fail on a duplicate; treat any such failure as a validation error.
++6. On any failure in steps 2–5, delete `staging.db` and report the error; `active.db` is untouched.
++7. On success, activate the new snapshot by replacing `active.db` with `staging.db` using a POSIX `rename(2)` call.
++
++Concurrent imports are not permitted; only one import may run at a time.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize the incoming serial before querying: strip surrounding whitespace, then uppercase all ASCII letters (A–Z). Characters outside the ASCII letter range — digits, punctuation, and non-ASCII characters — pass through unchanged.
++
++Execute:
++
++```sql
++SELECT serial, description, calibration_date, due_date FROM equipment WHERE serial = ?
++```
++
++Return `Found(record, snapshotDate)` when a row matches, or `NotFound(snapshotDate)` otherwise. The snapshot date comes from `metadata.snapshot_date`. Both result variants include the snapshot date.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite | On-site HTTPS directory; managed search service | SQLite satisfies the HLD tenet that all lookup must complete from kiosk-local files without runtime network access. HTTPS directory and managed search service both require lab-network connectivity, which the HLD prohibits and which introduces availability dependence on the lab network. SQLite's single-file model also eliminates any service to start, monitor, or recover. |
++| Atomic activation | POSIX `rename(2)` replacing `active.db` | Copy-and-overwrite; symlink swap | `rename(2)` is atomic on all POSIX filesystems: the active database is never partially replaced. A power failure either leaves the old `active.db` intact or the new one in place. Readers holding an open file descriptor to the old inode continue until their query completes, then pick up the new file on the next open. |
++| Index type | TEXT PRIMARY KEY (implicit B-tree) | Separate UNIQUE INDEX; hashed column | PRIMARY KEY gives the B-tree index required for O(log n) exact-match at no extra declaration cost. Hash-based lookup adds complexity with no measurable benefit at 90 k rows. |
++| Normalization scope | Trim surrounding whitespace; uppercase ASCII A–Z only | Full Unicode case-folding | The equipment catalog uses ASCII serial numbers. Full Unicode case-folding adds no correctness benefit and risks mismatching catalog entries whose non-ASCII characters carry case significance. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Lookup backend: local embedded SQLite.
++
++### Deferred
++1. Snapshot date format — the exact string format stored in `metadata.snapshot_date` and surfaced to certificates is not yet specified. Affects REG-002 and any CERT spec that displays the date.
++2. Behavior when no snapshot has been imported — `findBySerial` must behave predictably on a kiosk that has never received a snapshot; the current interface does not distinguish this from a normal NotFound.
++3. Import concurrency enforcement — the LLD requires only one import at a time but does not specify whether the registry component enforces this itself (returning an error on a second concurrent call) or delegates enforcement to its caller.
++4. WAL mode — not required for the current design, but may matter if future instrumentation reads `active.db` concurrently with an import-triggered rename.
++
++## References
++
++- HLD: `docs/high-level-design.md`
++- Certificates design: `docs/intent/certificates/certificates-design.md`

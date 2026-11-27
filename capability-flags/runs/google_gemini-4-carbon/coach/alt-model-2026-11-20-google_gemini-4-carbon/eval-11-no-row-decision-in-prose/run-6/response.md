@@ -1,0 +1,30 @@
+*Design-stage arrow with clean structure, an unrecorded tenet conflict in `job-queue`, and downstream rungs still ahead.*
+
+**Scorecard**
+- ✓ Configuration & mode fit — `CLAUDE.md` cleanly declares Full mode over a focused two-component repository
+- ✓ HLD & mutation hygiene — crisp problem, approach, goals, and tenets with zero changelog residue or leaked implementation detail
+- ⚠ Tenet cascade — `job-queue`'s ephemeral in-memory queue works against the HLD's upload-and-walk-away tenet and overnight-print goal under restarts
+- ⚠ Decision capture — existing `Decisions & Alternatives` rows are well-reasoned, though `job-queue`'s in-memory storage choice sits in prose with no row
+- ⚠ Cross-node & spec alignment — the `suspect` printer state, idle-notification seam, and several LLD behaviors are not yet aligned across sibling docs and EARS specs
+- ✗ Downstream rungs — all 8 EARS specs are marked `[x]`, while `@spec`-linked tests and implementation code have not landed yet
+
+The intent tree is compact, readable cold, and cleanly organized across `docs/high-level-design.md`, `job-queue`, and `printer-registry`; the highest-leverage next step is resolving the tension between `job-queue`'s in-memory-only queue and the HLD's overnight-print promise before implementing tests and code.
+
+**Findings (8 total · 3 high · 3 medium · 2 low)**
+- **F1 (high):** `job-queue-design.md` holds accepted jobs only in process memory and drops undispatched jobs on restart, working against the HLD tenet *"A submitted job is a promise: members should be able to upload and walk away"* and goal *"Evening upload, overnight print, morning pickup — with no member present"* during the unattended OS updates and power blips its own Context describes, with no recorded exception · *tenets capture forward-looking preference* (downstream designs lean the way the HLD's tenets and goals point, or explicitly record a traded exception)
+- **F2 (high):** Holding `job-queue` in process memory (while `printer-registry` already uses SQLite on the mini-PC and uploaded G-code files already live on disk) sits in `job-queue-design.md` § Architecture prose with no `Decisions & Alternatives` row recording what persistence option was set aside or what cost was accepted · *docs carry current intent, written to be read cold* (choices a cold reader would question belong in Decisions & Alternatives with their rejected alternative and accepted cost)
+- **F3 (high):** All 8 specs in `job-queue-specs.md` and `printer-registry-specs.md` carry `[x]` (implemented) status markers even though no test or source files exist in the repository yet · *canonical arrow shape — with a recursive design layer* (the arrow walks `HLD → LLDs → EARS → Tests → Code`, keeping specs marked `[ ]` until `@spec`-annotated tests and code realize them)
+- **F4 (medium):** `QUEUE-003` and `job-queue-design.md` mark a printer `suspect` on dispatch rejection or timeout, yet `printer-registry` (which owns printer state and dispatch eligibility) never mentions `suspect` and neither LLD defines whether `suspect` blocks dispatch or how it clears · *intent attaches at the lowest node that dominates it; cascade within a segment, pause across* (printer state shared across sibling segments needs a coordinated cascade so both nodes agree on ownership and transitions)
+- **F5 (medium):** Several behaviors stated in the LLDs have no EARS specs yet — `job-queue-design.md`'s registered-printer class check on upload, staff-over-member FIFO ordering, content-hash G-code storage, and 90-day base32 slugs, plus `printer-registry-design.md`'s printer registration flow · *effective intent-tree alignment* (behaviors described in an LLD map to EARS specs so intent is testable and traceable in both directions)
+- **F6 (medium):** `printer-registry-design.md` says the queue *asks* which printers are idle while `job-queue-design.md` and `QUEUE-002` describe dispatch as *event-driven* when the registry *reports* a printer idle, and neither LLD specifies the web UI or staff-vs-member identification that reordering and priority rely on · *LLDs close enough of the solution space* (LLDs narrow component seams enough that separate sessions land on compatible interfaces)
+- **F7 (low):** `QUEUE-001` scopes the 64 MB G-code upload cap to *"When a member uploads..."* even though `job-queue-design.md` defines both `staff` and `member` users and motivates the limit with mini-PC disk safety · *scope disambiguation* (a spec's `WHEN` clause states the intended scope explicitly whenever multiple roles or variants exist)
+- **F8 (low):** `docs/high-level-design.md` lists its three `## Tenets` as unordered bullets even though *"A submitted job is a promise"* and *"The mini-PC is modest hardware; the service stays small"* can pull in opposite directions · *tenets capture forward-looking preference* (ordering tenets that could conflict tells future sessions which lean wins)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/job-queue/job-queue-design.md`, `docs/intent/job-queue/job-queue-specs.md`, `docs/intent/printer-registry/printer-registry-design.md`, `docs/intent/printer-registry/printer-registry-specs.md`
+- Enumerated: 1 HLD, 2 leaf LLDs (`job-queue`, `printer-registry`), 2 EARS spec files, 0 arrow-overlay files (`docs/arrows/` not installed), 0 test files, 0 source files
+- Linkage metric: 8 unique EARS spec IDs (`5 QUEUE-*`, `3 REG-*`, all marked `[x]`), 0 `@spec` references in tests or code
+
+Want me to walk through these findings in detail, focus on a specific priority tier or theme, or work through individual items like F1/F2 together?
+
+If you also have broader questions about using LID on `printfarm` — such as transitioning from design-only specs into the tests-first workflow, modeling the web UI in the intent tree, or deciding when to add the `arrow-maintenance` overlay — I can help with those too.

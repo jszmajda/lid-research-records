@@ -1,0 +1,5 @@
+Overkill, I think — and here's the test I applied: the deciding constraint is already a HLD tenet (lookups complete using files on the kiosk, no runtime network access). That tenet alone eliminates the HTTPS directory and the managed service; the SQLite row in the Decisions table records why the rebuild cost is acceptable. A cold reader landing on this design wouldn't be tempted to reverse it — the architecture visibly couldn't be a network-backed service. A decision doc earns its place when the choice stays genuinely live, i.e. credible options traded against criteria the tenets don't settle. That isn't the case here, however long the back-and-forth felt.
+
+So: the row stands as-is, no doc. If you'd rather memorialize it anyway, say so and I'll write one — but I'd recommend against it.
+
+Shall I proceed to tests-first (Phase 5) against REG-001..004, or do you want to finish reviewing the design first?

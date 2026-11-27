@@ -1,0 +1,139 @@
+diff --git a/docs/decisions/delivery-approach.md b/docs/decisions/delivery-approach.md
+new file mode 100644
+index 0000000..7cad0e0
+--- /dev/null
++++ b/docs/decisions/delivery-approach.md
+@@ -0,0 +1,112 @@
++---
++node: high-level-design
++---
++
++# Decision: Change Delivery Approach
++
++## Context
++
++MarketBoard's core value is showing committed edits to all connected browsers as fast as possible. The system receives edits from up to 10–25 editors per market, averaging 2 per minute with bursts to 20 per second at opening time. Up to 800 browsers need to see those changes, and the HLD goal is to show them within 15 seconds under normal connectivity.
++
++Three technically viable approaches exist for delivering changes from the server to browsers. All can meet the 15-second target, but they differ radically in latency ceiling, operational complexity, cost, and independence. The choice commits the server's session model, the change store's data shape, and the browser's reconnect behavior, so it must be settled before designing those three components.
++
++## Decision Elements
++
++### Gates
++
++- **Meets HLD goals:** Delivers changes to connected browsers fast enough, supports 800 simultaneous browsers, and survives opening-time bursts of 20 edits/second.
++- **One authoritative revision:** A committed edit must have exactly one revision ID regardless of how it was delivered (tenet: *A committed edit has one authoritative event revision regardless of its delivery route*).
++- **Connectivity visibility:** Disconnection and reconnection must be distinguishable from an unchanged board (tenet: *Connectivity failures must be visible, not mistaken for an unchanged board*).
++
++### Weighted Criteria
++
++- **Latency (major).** Subsecond delivery is the ideal; the 15-second SLO is a floor. Users experience stale information as broken, even if technically meeting the goal. Updates that are perceived as "instant" build confidence; updates that visibly lag create frustration and hesitation.
++- **Operational overhead (major).** The team maintains MarketBoard, not an infrastructure company. Connection state management, session cleanup, and reconnect logic are novel work that diverts the team from domain features. Owned infrastructure must be justified by what it enables that no vendor alternative provides.
++- **Time to market (moderate).** The pilot ships this calendar year. Adopting a proven third-party service accelerates delivery; building custom infrastructure adds design, testing, and operational hardening.
++- **Vendor coupling (moderate).** Dependencies on external services create surface area: uptime guarantees, API stability, feature deprecations, pricing changes. The HLD tenet permits both self-hosted and managed infrastructure, signaling that neither is forbidden; the choice is a tradeoff, not an inherited constraint.
++- **Cost (moderate).** Operating a board in 40 markets for a year incurs real expenses; recurring fees to a vendor scale with usage. The budget has not been declared an overriding constraint, but it is a measurable factor.
++
++## Options in the Domain
++
++### Five-Second HTTPS Polling
++
++Browsers ask the server every five seconds "have changes happened since I last checked?" The server maintains a cursor-indexed change log; browsers read new entries and render them.
++
++**Description:** Browsers use standard `fetch()` or XMLHttpRequest with a polling interval, typically 5 seconds. The server maintains a simple change log indexed by timestamp or sequence number. The browser stores its read cursor (last change ID it has processed) and asks the server for changes since that cursor. The server returns the new changes, the browser updates its cursor, renders, and waits another 5 seconds.
++
++**Analysis:**
++
++- **Meets HLD goals:** *Weak fit.* Polling can technically deliver within 15 seconds (at a 5-second interval, average latency is 2.5 seconds, worst case 5). Opening-time bursts are survivable if the server is not CPU-constrained. However, under the 15-second SLO the perceived lag is significant: users wait 2–5 seconds to see their own edit reflected, which feels broken even though it meets the spec. Subsecond delivery (the ideal) is not achievable.
++- **One authoritative revision:** *Passes.* Each change gets one revision ID at write time; polling retrieves it without ambiguity.
++- **Connectivity visibility:** *Weak fit.* A stalled poll is indistinguishable from no new changes—the browser does not know it has lost connectivity unless the server explicitly errors, and recovery is implicit (the next poll succeeds). The tenet requires visible failure signals. Detecting and surfacing stalls requires a timeout mechanism, which adds complexity.
++- **Latency (major):** *Weak fit.* 5-second polling cannot deliver subsecond updates. Average latency is 2–3 seconds; perceived performance degrades and users learn to hesitate before trusting they saw an update.
++- **Operational overhead (major):** *Strong fit.* No session state, no reconnect logic. The change log is append-only and indexed by cursor. The server is completely stateless; multiple instances can serve requests without coordination.
++- **Time to market (moderate):** *Strong fit.* Polling is the simplest option to build and deploy. No new infrastructure, no connection management. A prototype can ship in days.
++- **Vendor coupling (moderate):** *Strong fit.* No external dependencies. Entirely self-hosted and fully under the team's control.
++- **Cost (moderate):** *Weak fit.* 800 browsers polling every 5 seconds = 9,600 requests per minute = 160 requests/second. This is sustainable but not free; it taxes the server and network proportionally to the number of connected browsers. Cost scales with participation.
++
++**Summary:** Simplicity and independence at the cost of perception—users will feel the lag, even though it meets the letter of the goal.
++
++### Self-Hosted WebSockets
++
++Browsers establish persistent connections to the server. The server publishes each change to all connected browsers over these sockets. Browsers reconnect on disconnect and request missed changes. The change store maintains replayable revisions so recovering clients can catch up.
++
++**Description:** Each browser opens a WebSocket when it loads the board, negotiates which event it is viewing, and stays connected. The server maintains a session for each browser's connection and tracks which revision each client has seen. When an edit is committed, the server publishes it to all connected browsers over their sockets; each browser receives it within milliseconds. If a browser disconnects, it is released from the session. When it reconnects, it provides its last-known revision and the server sends all changes it missed. The change store must maintain full revision history (not just a cursor index) and support replay from any starting point.
++
++**Analysis:**
++
++- **Meets HLD goals:** *Strong fit.* WebSocket delivery is subsecond; a change published to 800 browsers reaches them all within a few hundred milliseconds, far better than the 15-second SLO. The server must handle the connection overhead, but at 800 simultaneous connections the workload is well within modern server capacity (thousands of connections per server). Burst handling is natural: a change is published once and fanned to all clients in one operation.
++- **One authoritative revision:** *Passes.* Each change is assigned one revision at write time and published to all clients; no ambiguity.
++- **Connectivity visibility:** *Strong fit.* Browser connection loss is immediate and unambiguous; the browser knows instantly when a disconnect happens and can signal it to the UI. Reconnection is explicit, not implicit. The tenet is naturally satisfied.
++- **Latency (major):** *Strong fit.* Subsecond delivery is the defining property. Users see their edits reflected in real time; the experience is instant.
++- **Operational overhead (major):** *Weak fit.* The server must manage persistent connections, track session state, detect stale connections, and implement graceful cleanup. WebSocket debugging is harder than request/response debugging. Reconnect resilience (the client must cache and replay requests across disconnection) requires test coverage the team may not yet have. This is non-trivial infrastructure work that the team becomes responsible for.
++- **Time to market (moderate):** *Partial fit.* WebSockets are a standard browser feature, but reliable reconnect logic and session management add weeks to development time. Not as fast as polling, but faster than building custom protocols. A prototype is achievable in a sprint.
++- **Vendor coupling (moderate):** *Strong fit.* Entirely self-hosted. No external services, no recurring fees, no provider constraints. Full control and freedom.
++- **Cost (moderate):** *Strong fit.* Costs are operational (the server's CPU and bandwidth) not recurring. One server can handle thousands of connections; no scaling surprise at 800 browsers.
++
++**Summary:** Fast and independent, at the cost of owning connection infrastructure.
++
++### Hosted Realtime Service
++
++A third-party service (e.g., Pusher, Ably, Firebase Realtime Database) manages persistent connections. The server publishes changes to the service; the service fans them to all connected browsers.
++
++**Description:** The server publishes each change to the third-party service's API (e.g., `POST /channels/{board}/publish`). The service is responsible for maintaining browser connections, delivering messages, handling disconnection/reconnection, and managing session state. Browsers connect to the service (not the server) and subscribe to a channel for their board. The service routes published messages to all subscribers. The server does not manage any connection state or worry about reconnect logic.
++
++**Analysis:**
++
++- **Meets HLD goals:** *Strong fit.* Third-party services are designed for subsecond delivery to thousands of clients. Burst handling is built in. Uptime is typically 99.9% or better; the service is more reliable than the team can make a self-hosted solution.
++- **One authoritative revision:** *Passes.* The server assigns one revision per change; the service simply relays it.
++- **Connectivity visibility:** *Strong fit.* The service exposes connection state to browsers (connected, disconnected, reconnecting); the browser UI can signal clearly.
++- **Latency (major):** *Strong fit.* Subsecond delivery is the service's core value. It is faster than polling and often faster than self-hosted WebSockets (the service invests in global infrastructure and CDN).
++- **Operational overhead (major):** *Strong fit.* Zero operational overhead. The team does not manage connections, sessions, or reconnect logic. The service handles all infrastructure; the team treats it as a utility.
++- **Time to market (moderate):** *Strong fit.* Fastest route. Integrate the service SDK, call publish API, and done. Prototype in days.
++- **Vendor coupling (moderate):** *Weak fit.* Directly contrary to the goal of independence. The system depends on the service's availability, pricing, API stability, and the team's ability to pay. A pricing increase, service sunset, or provider acquisition could force a rewrite. The team's ability to fork or port is zero while the service is in use.
++- **Cost (moderate):** *Weak fit.* Recurring costs at scale. A service like Pusher charges based on concurrent connections or published messages. At 800 browsers and 20 messages/second during peak hours, monthly costs can range from $200 to $2,000+ depending on the provider and plan. Over a year, this is a real expense.
++
++**Summary:** Fast and operationally effortless, at the cost of recurring fees and vendor lock-in.
++
++## Selection
++
++**Self-hosted WebSockets is the chosen approach.**
++
++The decision turns on two criteria: latency and independence.
++
++**Latency** is a *major* criterion, and the HLD's opening statement lists "show committed changes in connected browsers within 15 seconds" as a core goal. Subsecond delivery is the ideal; the 15-second number is a safety floor. Polling cannot achieve subsecond—at 5-second intervals, average latency is 2–3 seconds, and users *feel* that lag. In a live board where stall status and power problems demand immediate action, lag erodes confidence. The hosted and self-hosted WebSocket options both deliver subsecond updates; polling does not. On this criterion alone, polling is eliminated.
++
++**Vendor independence** carries weight for a coordinators' board. MarketBoard is infrastructure for weekend markets, not a commercial service with a paying customer who can absorb price increases. Adopting a vendor dependency (Pusher, Ably, Firebase) creates ongoing exposure to the service's availability, pricing, and the team's ability to pay for scale. The HLD tenet states "Self-hosted and managed infrastructure are both permitted"—a signal that independence is valued. The project has latitude to own infrastructure; it is not an inherited constraint that managed services are required.
++
++**Against self-hosted WebSockets:** Operational overhead is *major*, and the team will genuinely own connection management, session cleanup, and reconnect resilience. This is non-trivial infrastructure work. However, the overhead is bounded: modern servers handle thousands of concurrent WebSocket connections at low CPU cost. The session and reconnect logic is well-established in libraries and frameworks; it is not a research problem. The team will learn it, and the investment is a one-time cost for a system that will run for years. The cost is acceptable for the independence and subsecond performance it enables.
++
++**Why not hosted:** Hosted services are operationally effortless and arguably the fastest path to a prototype. But the tradeoff is coupling to an external provider's availability and pricing. For a board serving 40 markets and 120 coordinators—a shared utility owned by no single paying customer—outsourcing infrastructure to a service that can be cut off or repriced is a form of operational risk the team is choosing to bear instead, by owning the infrastructure. This is a defensible priority: the team prefers to own complexity (connection management) rather than dependency (vendor lock-in). The choice is not about cost (the HLD did not declare cost an overriding factor) or capability (hosted services are superior here); it is about independence.
++
++**Implications:**
++
++- *Forecloses:* A fully managed infrastructure option. The team will not use Pusher, Ably, Firebase, or similar services.
++- *Obligates:*
++  - The **change store** must maintain full revision history in a replay-friendly format (not just a cursor-indexed log).
++  - The **delivery component** must own connection state, session tracking, and graceful cleanup of stale connections.
++  - The **browser sync component** must implement reconnect logic, cache pending commands across disconnection, and request missed revisions on reconnect.
++  - Operational tooling and monitoring to detect and clean up dead connections.
++  - Test coverage of failure modes: reconnection, out-of-order delivery, and long-lived connections under load.
++
++The choice is a commitment to build and operate connection infrastructure. The team is accepting this burden to retain independence, achieve subsecond latency, and avoid vendor lock-in.
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 34ebfe7..bc1d35b 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -6,9 +6,9 @@ Forty weekend markets currently relay stall closures, late arrivals, and power p
+ 
+ ## Approach
+ 
+-Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. The approach for delivering committed changes is still open: five-second HTTPS polling, self-hosted WebSockets, or a hosted realtime service. All three can meet the required freshness target. Subsecond updates would be useful, but are not required.
++Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. Committed changes are delivered to browsers over self-hosted WebSockets for low-latency updates without vendor coupling.
+ 
+-Delivery, change storage, and browser recovery must be designed together after this choice. Polling would favor cursor queries; self-hosted sockets would need connection management and replay; hosted delivery would need publication reconciliation and provider credentials. Neither operating cost nor minimum operational burden has been declared the overriding criterion.
++The server publishes each committed change to connected browsers over persistent WebSocket connections. Browsers establish a session per board, reconnect on disconnect, and catch up with missed revisions. Change storage maintains replayable revisions so clients can recover from mid-session disconnection. The server owns connection state and session cleanup, accepting the operational burden of managing connection capacity and reconnect logic as the tradeoff for fast updates and independent scaling.
+ 
+ ## Architecture
+ 
+@@ -41,3 +41,4 @@ Delivery, change storage, and browser recovery must be designed together after t
+ ## Key Design Decisions
+ 
+ - **Commands over HTTPS, one authoritative board per event.** Editors submit commands to the server, which assigns each committed edit one event revision. Peer-to-peer or browser-side merging was rejected: the tenets require one authoritative revision regardless of delivery route, and offline editing is a non-goal.
++- **Self-hosted WebSockets for change delivery.** Deliver committed changes to browsers over persistent WebSocket connections for low-latency updates (targeting subsecond, supporting up to 20 edits/sec during opening-time bursts) without recurring vendor fees or provider coupling. Full decision doc: `docs/decisions/delivery-approach.md`. The team is accepting operational overhead (connection management, session tracking, reconnect resilience) to retain independence and achieve subsecond latency.

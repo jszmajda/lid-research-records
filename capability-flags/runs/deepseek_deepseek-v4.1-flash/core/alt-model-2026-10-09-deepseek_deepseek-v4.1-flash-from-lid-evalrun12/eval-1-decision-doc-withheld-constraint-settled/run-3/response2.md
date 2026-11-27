@@ -1,0 +1,3 @@
+Overkill — keep it as the table row.
+
+The earns-its-place test is whether a cold reader would re-litigate the choice without the full tradeoffs. Here they wouldn't: the HLD's no-runtime-network tenet eliminates both alternatives outright, so the outcome is settled by an inherited constraint rather than by a live weighing, and the decision affects only the registry node. The skill says such a choice gets a row (or nothing), and offering a doc for it is the residue it warns against. The rationale line I wrote already carries what a reader needs: why SQLite, and why the other two are non-viable.

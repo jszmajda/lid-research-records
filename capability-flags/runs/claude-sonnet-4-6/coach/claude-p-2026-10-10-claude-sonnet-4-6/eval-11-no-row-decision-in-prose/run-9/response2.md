@@ -1,0 +1,21 @@
+**F1 — High. The choice to keep accepted jobs only in memory has no row in the Decisions table.**
+
+The job-queue LLD states that "jobs that were accepted but not yet dispatched before a restart are gone, and members resubmit them." This is a meaningful durability decision — one that a cold reader, holding just the landed design, would immediately question: the printer-registry LLD is already using SQLite on the same machine, so persisting the queue there or in a second table is an obvious alternative. Under *docs carry current intent — decision capture* (the principle that live design choices need enough on-page reasoning that a future reader wouldn't reverse them without knowing what they're giving up), the absence of a row here is a gap. The current Decisions table covers scheduling order, job identifier format, and upload size — all the interesting *within-queue* choices — but skips the choice that governs the queue's durability contract entirely. If implementation starts soon, the first session that touches the queue will face this question cold and either add persistence (contradicting the LLD) or drop jobs on restart (confirming it) without knowing which was intended.
+
+The remedy is a new Decisions row — something that names the rejected alternative (SQLite persistence) and the accepted cost (members may need to resubmit after a restart). The row doesn't need to be long; it needs to name the trade-off so a future reader can hold it. Something like: *"Queue persistence | In-process memory only | SQLite considered; rejected to keep restart semantics simple and avoid write-ahead log complexity on the mini-PC; accepted cost: accepted-but-undispatched jobs are lost on restart, members resubmit."* That's the whole capture.
+
+---
+
+**F2 — High. That same design choice sits in direct tension with the top tenet.**
+
+The HLD's first tenet is "A submitted job is a promise: members should be able to upload and walk away." The job-queue Context section immediately sets up the operating condition that makes this tense: "The service runs on the workshop mini-PC, which takes unattended OS updates and the occasional power blip." A member who uploads a job at 9 pm, goes to bed, and wakes up to find the job gone because the mini-PC rebooted overnight has experienced exactly the situation the tenet says shouldn't happen. Under *tenet cascade* — the principle that a mechanism working against a declared tenet under a described operating condition should be recorded as a deliberate exception, not left silent — this conflict needs to be on the page somewhere. It isn't a fatal flaw; it's a trade-off the design might deliberately accept. But right now a future session reading the tenet, then reading the LLD, will either add queue persistence (contradicting a silent design choice) or feel the tension and not know what to do.
+
+You have three options, and none is obviously right without knowing your priorities:
+
+1. **Change the design** — persist the queue (e.g., a `jobs` table in the same SQLite file). This resolves the tenet conflict and requires the Decisions row to document why you chose it. The LLD's durability section would become a strength of the design.
+
+2. **Record the exception** — add a Decisions row (as in F1) naming the tenet traded against and why. "Tenet 1 says jobs are a promise; we accept restart loss in exchange for simplicity; members can resubmit, and the tenet's stronger application is to jobs already dispatched." This also closes F1 in one row, since recording the trade-off answers both findings.
+
+3. **Revise the tenet** — narrow tenet 1 to cover dispatched jobs ("once a job reaches a printer, it runs to completion") and add a note that the pre-dispatch window is best-effort. This changes the contract the system is promising, so it's worth being deliberate about.
+
+The choice is yours. If the mini-PC's reboot frequency is low and resubmission is genuinely fine for your members, option 2 is probably the least work. If you want the "upload and walk away" promise to hold across reboots, option 1 is the right investment. Either way, the action is to edit `docs/intent/job-queue/job-queue-design.md` — either the Decisions table, the Architecture section, or both.

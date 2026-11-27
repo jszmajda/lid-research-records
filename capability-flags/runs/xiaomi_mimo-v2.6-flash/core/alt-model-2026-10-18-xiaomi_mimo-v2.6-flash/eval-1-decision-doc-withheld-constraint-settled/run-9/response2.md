@@ -1,0 +1,5 @@
+Overkill — a Decisions & Alternatives row in `registry-design.md` is the right size. Two parts of the heuristic rule it out: the HLD's no-network tenet is an inherited gate that eliminates the HTTPS-directory and managed-search options for any cold reader, and the choice's substance is node-local (the certificates interface was held fixed either way). A row's rationale line — *"no-network tenet eliminates network-backed backends; per-kiosk index rebuild is the accepted cost"* — is everything a future reader needs; the fact that the deliberation felt heavy is a symptom, not the test.
+
+If you want the full decision doc anyway, say so and I'll write it — but my recommendation is the row, recorded during Phase 2.
+
+Still at the **Phase 1 stop**: approve the HLD line above (or give numbered feedback) and I'll proceed to finishing the registry LLD.

@@ -1,0 +1,5 @@
+This clears the bar for a decision doc. Three credible alternatives with real tradeoffs, explicit back-and-forth, and the choice shapes the registry's entire architecture (offline vs network, local rebuild vs central maintenance, no runtime service vs service dependencies). A cold reader would re-litigate "why not the HTTPS directory?" or "why not managed search?" — the rationale isn't self-evident from the landed structure.
+
+It's a **segment-level decision** (registry owns its lookup backend), so it would live at `docs/intent/registry/decisions/lookup-backend.md` and be linked from the registry design's Decisions & Alternatives table.
+
+Want me to draft it? I'll use the template structure: Context, Decision Elements (gates + weighted criteria tied to tenets), Options in the Domain with analysis, and Selection.

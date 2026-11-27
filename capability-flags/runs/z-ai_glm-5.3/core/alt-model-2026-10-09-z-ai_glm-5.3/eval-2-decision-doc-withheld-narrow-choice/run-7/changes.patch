@@ -1,0 +1,127 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..81068ec 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with 2Q eviction.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/decisions/eviction-policy.md b/docs/intent/previews/decisions/eviction-policy.md
+new file mode 100644
+index 0000000..df6aea5
+--- /dev/null
++++ b/docs/intent/previews/decisions/eviction-policy.md
+@@ -0,0 +1,64 @@
++---
++node: previews
++---
++
++# Decision: Preview cache eviction policy
++
++## Context
++
++The preview worker renders one JPEG contact sheet per immutable clip revision and renderer version (typically 2 MiB, about 450 ms per render) into a private, bounded cache of at most 12 GiB. Editors alternate between two conflicting workloads: long sequential screenings that touch each clip once, and comparison sessions that re-request a small working set repeatedly. The mix varies by production, so the cache replacement policy materially changes hit rate — and every miss costs a 450 ms re-render.
++
++The policy is an internal implementation detail of the preview worker. The HLD fixes the external contract for every candidate: the HTTP interface (200 / 202 with job ticket / 404), render-queue concurrency, the pending-response protocol, and the disk budget are identical under any of them, and no other node reads cache files or replacement metadata. Selection therefore turns entirely on hit-rate behavior against the observed workload mix, weighed against the bookkeeping the worker must carry.
++
++## Decision Elements
++
++- **Scan resistance** *(major)*: a long sequential screening of ~6,000 clips viewed weekly must not evict sheets from an active comparison set. Each wrongful eviction costs a 450 ms re-render of a sheet that was recently used and is about to be used again. Derives from the workload structure in the HLD's problem statement.
++- **Project-switch adaptation** *(major)*: when editors move to a new production, the cache should re-warm to the new working set promptly rather than serving stale hit-rate statistics from the previous project.
++- **Bookkeeping cost** *(moderate)*: per-request state the worker must maintain under the "keep replacement bookkeeping private to the preview worker" tenet — counters, timestamps, and queue membership, all on the request path of a single eight-core worker serving 24 editors.
++- **Tuning burden** *(moderate)*: how many free parameters the policy introduces, and how observable their effect is during the pilot.
++
++All three candidates pass the inherited constraints unchanged (interface, concurrency, budget, privacy), so no gate eliminates an option; the decision is entirely a criteria trade.
++
++## Options in the Domain
++
++### LRU
++
++**Description**: a single queue of sheets ordered by last reference. A hit moves the sheet to the most-recently-used end; admission pressure evicts the least-recently-used tail. One timestamp or list node per entry, no counters, no configuration.
++
++**Analysis**:
++- Scan resistance: **weak** — a sequential screening marches every one-use sheet through the queue, evicting the comparison set behind it; last-reference ordering cannot distinguish a one-use scan sheet from a sheet hit twice an hour ago.
++- Project-switch adaptation: **strong** — the queue re-warms to new work immediately.
++- Bookkeeping cost: **strong** — a single list operation per hit; the cheapest of the three.
++- Tuning burden: **strong** — no parameters.
++
++**Summary**: minimal machinery, maximal vulnerability to the exact workload (screenings) the archive sees most.
++
++### Frequency-based eviction with aging
++
++**Description**: each entry carries a hit counter that decays over time; admission pressure evicts the lowest-count entries. Repeatedly popular comparison sheets accumulate high counts and survive screenings; aging counters down so counts from a previous production fade.
++
++**Analysis**:
++- Scan resistance: **strong** — one-use sheets never accumulate counts, so the comparison set survives.
++- Project-switch adaptation: **partial** — aging eventually clears old counts, but the decay rate trades directly against retention: fast enough to follow a project switch, it also erodes the comparison set's protection within one project.
++- Bookkeeping cost: **weak** — a counter update on every hit plus an aging pass over all entries, the heaviest per-request work of the three.
++- Tuning burden: **weak** — the aging rate is a second free parameter whose effect is only observable over hours, and its correct value varies by production.
++
++**Summary**: the strongest protection, paid for in the most machinery and the hardest tuning.
++
++### 2Q
++
++**Description**: two queues split the budget — A1 for first-use sheets, managed FIFO, and A2 for reused sheets, managed LRU. A sheet enters A1 on admission; a hit while it is in A1 promotes it to A2. Admission pressure evicts the A1 tail while A1 exceeds its share of the budget, otherwise the A2 LRU end. In the simplified variant chosen here, no ghost list records A1 evictions; a re-requested evictee re-enters A1.
++
++**Analysis**:
++- Scan resistance: **strong** — a screening fills A1 and evicts only A1; sheets promoted to A2 are untouched until A1 is drained.
++- Project-switch adaptation: **strong** — A2's LRU ordering re-warms to new comparisons without any decay machinery to tune.
++- Bookkeeping cost: **partial** — two queue memberships per entry instead of one; more than LRU, but purely list operations with no counters or aging passes.
++- Tuning burden: **partial** — one free parameter, the A1 share (initially 25% of the budget), whose effect is directly observable as A1/A2 hit split during the pilot.
++
++**Summary**: LRU's list-only machinery arranged so that screenings and comparisons stop competing for the same queue.
++
++## Selection
++
++**2Q.** It is the only candidate that is strong on both major criteria: screenings and comparisons occupy separate queues, so neither workload damages the other, and a project switch re-warms through A2's LRU ordering with no decay parameter to mistune. The choice turns on the workload structure the HLD names — alternating screenings and comparison sets — against which LRU is directly vulnerable. Aged frequency matches 2Q on scan resistance but pays for it with the weakest scores on both cost criteria: counter maintenance and an aging rate that must be tuned per production anyway, which concedes 2Q's advantage for no gain in adaptation.
++
++Committing to 2Q obligates the worker to maintain two queue memberships per entry and obligates the pilot to tune the A1 share (recorded as a deferred decision in the LLD); the A1out ghost-list variant remains a documented future option if pilot data shows sheets frequently re-requested shortly after A1 eviction. It forecloses single-queue simplicity and accepts that a re-requested A1 evictee needs a second hit to reach A2 in the simplified variant. All of this stays inside the preview worker, per the tenet that keeps replacement bookkeeping private; the external contract is unchanged, per the tenet that every eviction policy returns the same outcomes.
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..bbe8bdf 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -21,6 +21,37 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB across both queues. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++Replacement is 2Q: two queues divide the 12 GiB budget, separating first-use sheets from reused sheets so a sequential screening cannot evict a comparison set.
++
++- **A1 (new queue)** — sheets enter A1 on first admission, managed FIFO. Eviction from A1 takes the oldest sheet, so a sequential scan only displaces other one-use sheets.
++- **A2 (reuse queue)** — when a request hits a sheet in A1, the sheet is promoted to A2's most-recently-used end; A2 is managed LRU, so a hit in A2 refreshes position.
++- **Admission path** — a completed render is admitted to A1 even if the same key was evicted earlier; no ghost list records prior evictions. A sheet must be referenced while resident in A1 to reach A2.
++- **Eviction order** — when admitting a sheet would exceed the bound: if A1 occupies more than its share of the budget, evict the A1 tail; otherwise evict the least-recently-used sheet from A2.
++- **A1 share** — the fraction of the 12 GiB budget reserved for A1 before A2 is tapped, initially 25%.
++- **Reference definition** — only completed admissions and cache hits count as references. Requests that share a pending render job do not count as reuse; each key's first completed admission places it in A1.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q | LRU; frequency-based eviction with aging | 2Q protects the reused comparison set during long sequential screenings, where LRU would evict it, and adapts immediately when editors switch projects, where aged frequency counters would retain yesterday's favorites. It costs two queues and a size split to tune, but all changes stay inside the preview worker; the external interface, queue concurrency, and disk budget are unchanged. Full options and criteria: [decisions/eviction-policy.md](decisions/eviction-policy.md). |
++| 2Q variant | Simplified two-queue (A1 FIFO + A2 LRU, no ghost list) | Full 2Q with an A1out ghost list | The ghost list adds a third structure to give re-referenced evictees a direct path to A2. Without it a re-requested sheet re-enters A1 and needs one more hit to promote — the common case still lands in A2. The extra bookkeeping is deferred until pilot hit rates justify it. |
++| A1 share | 25% of the 12 GiB budget | Larger (scan-tolerant) or smaller (reuse-heavy) splits | Starting value within the usual 25–50% band; tuned during the pilot against observed workload mix. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Eviction policy: 2Q, chosen to protect comparison sheets during big screenings at the cost of extra bookkeeping; all policy changes confined to the preview worker.
++
++### Deferred
++
++1. Tune the A1 share (initially 25%) against pilot hit rates; adjust by production workload mix.
++2. Add the A1out ghost list if pilot data shows sheets frequently re-requested shortly after A1 eviction.
++
++## References
++
++- `docs/high-level-design.md` — budget, tenets, and the fixed preview interface.
++- `docs/intent/review-api/review-api-design.md` — the only consumer of the preview interface; deliberately blind to cache internals.

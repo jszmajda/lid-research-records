@@ -1,0 +1,11 @@
+I’d recommend **keeping it as the `Decisions & Alternatives` row in `previews-design.md`** rather than writing a standalone decision doc.
+
+Here is why:
+
+1. **Test from the landed design forward, not the debate backward.** Three meetings and 180 messages make it feel like it ought to have a bigger artifact, but LID’s bar for a decision doc is what a future cold reader of the landed system needs — not how hard the choice was to reach. A long argument that distills cleanly still belongs in a table row so the docs carry current intent rather than memorializing the deliberation.
+2. **Nothing outside `previews` leans on this choice.** All three candidates keep the `200`/`202`/`404` HTTP contract, the four-job FIFO render queue, the 12 GiB disk cap, and `review-api` completely unchanged, and HLD tenets explicitly keep replacement bookkeeping private to the preview worker. No sibling node is sized around 2Q, so there are no cross-node assumptions at risk if someone revisits the policy later.
+3. **The table row already stops a naive reversal.** A future maintainer who asks *"why two queues instead of plain LRU or aged frequency?"* gets the complete trade in one place: LRU gets flushed by sequential screenings, aged frequency adds counter/decay overhead and lags project switches, and 2Q isolates scan traffic while letting comparison sets age out via LRU. A standalone doc in `docs/intent/previews/decisions/` would mostly restate that local trade while adding another file to keep coherent.
+
+The one reason to write a full decision doc anyway is if your team expects to **re-litigate this once pilot telemetry arrives** and wants explicit weighted criteria and per-option analysis written down (cold, without the meeting history) so nobody has to reconstruct the evaluation framework from scratch.
+
+If you still want one despite the extra doc surface for a single-node decision, say the word and I’ll draft `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from the table row. Otherwise, let’s stick with the row in `previews-design.md` and walk through any edits or the Phase 2 edge-case items (1–7) before moving to `previews-specs.md`.

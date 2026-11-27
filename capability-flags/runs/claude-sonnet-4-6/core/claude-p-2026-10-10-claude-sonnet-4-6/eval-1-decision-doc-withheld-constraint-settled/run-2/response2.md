@@ -1,0 +1,3 @@
+Overkill. The test is whether a cold reader of the landed LLD would question the choice or be tempted to reverse it — and here, they wouldn't. The HLD tenet ("no runtime network access permitted") is right there, and both alternatives require network access. The Decisions row already cites the tenet, so a cold reader can reconstruct the whole selection in one step: tenet eliminates HTTPS directory and managed search service, SQLite is what's left.
+
+A decision doc earns its place when the choice stays genuinely live for a cold reader — when they'd re-litigate it without the full tradeoffs laid out. This choice doesn't stay live once the tenet is in view. The Decisions row is the right level.

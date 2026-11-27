@@ -1,0 +1,152 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..dee94c3 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using 2Q replacement.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/decisions/eviction-policy.md b/docs/intent/previews/decisions/eviction-policy.md
+new file mode 100644
+index 0000000..39b176e
+--- /dev/null
++++ b/docs/intent/previews/decisions/eviction-policy.md
+@@ -0,0 +1,82 @@
++---
++node: previews
++---
++
++# Decision: Preview Cache Replacement Policy
++
++## Context
++
++The preview worker maintains a bounded 12 GiB private cache of rendered JPEG contact sheets. Two distinct usage patterns drive load: long sequential screenings, in which an editor steps through hundreds of clips seen once and likely never again, and focused comparison sessions, in which a small working set of sheets is revisited repeatedly. The replacement policy must protect comparison sheets during screenings while respecting the single-machine budget. No other node pins entries, inspects policy counters, or sees eviction events; the policy is entirely internal to the worker.
++
++## Decision Elements
++
++**Gate — no change to the external interface.** The replacement policy is hidden behind `GET /internal/previews/{clip-id}/{revision}`. Any option that leaves the 200/202/404 contract and the FIFO render queue unchanged passes. All three candidates pass.
++
++**Criterion 1 — screening-scan resistance (major).** A long screening populates the cache with hundreds of one-use sheets. The policy must not allow that scan to evict the comparison sheets an editor returns to across sessions. This is the criterion that most directly determines whether the cache serves its purpose on the observed workload.
++
++**Criterion 2 — bookkeeping cost (major).** The worker runs on one eight-core machine shared with the render queue. Per-request metadata overhead competes with rendering throughput at 450 ms per sheet.
++
++**Criterion 3 — adaptation after a project switch (moderate).** Editors routinely switch between projects. Entries from a finished project should lose priority within a reasonable number of subsequent cache fills, not linger indefinitely.
++
++**Criterion 4 — tuning surface (minor).** Parameters that must be calibrated before production add operational burden. Fewer startup parameters, or parameters with interpretable defaults, reduce this cost.
++
++## Options in the Domain
++
++### LRU
++
++**Description.** A single doubly-linked list ordered by recency of access, with a hash map from cache key to node. On every hit, move the node to the MRU end. On every admission, evict from the LRU end until there is room. No state beyond the list and the map; no startup parameters.
++
++**Analysis.**
++- Gate — external interface unchanged: **passes**.
++- Criterion 1 — screening-scan resistance: **weak**. A sequential screening of N sheets evicts the N least-recently-used entries, which are the comparison sheets that haven't been touched during the screening. The longer the screening, the more comparison work is displaced.
++- Criterion 2 — bookkeeping cost: **strong**. O(1) per hit and per admission; one pointer-pair update per access.
++- Criterion 3 — adaptation after project switch: **strong**. Stale entries fall to the LRU end naturally as new work arrives; a project switch clears old favorites within one cache-volume of new accesses.
++- Criterion 4 — tuning surface: **strong**. No parameters beyond the total size limit.
++
++**Summary.** Minimum bookkeeping, fast adaptation — but offers no protection for reused entries against scan traffic.
++
++---
++
++### Frequency-based eviction with aging
++
++**Description.** Each cached entry carries an access counter. On a hit, increment the counter. Periodically (or on eviction), decay all counters by a factor (e.g., halve them). On eviction, remove the entry with the lowest decayed frequency. Counter decay prevents entries from accumulating unbounded counts that would make them immune to eviction after a project switch.
++
++**Analysis.**
++- Gate — external interface unchanged: **passes**.
++- Criterion 1 — screening-scan resistance: **partial**. An entry seen many times before a screening retains a high counter and resists eviction. However, if a screening run is long enough, newly admitted screening entries accumulate counts that can rival the comparison entries' aged counts, and the protection erodes. The degree of protection depends on the decay rate and the ratio of screening length to comparison-session frequency.
++- Criterion 2 — bookkeeping cost: **partial**. Each hit requires a counter increment (cheap) and each eviction a linear scan or a priority queue update. Periodic aging requires traversing all cached entries — O(n) — or maintaining a sorted structure — O(log n) per update.
++- Criterion 3 — adaptation after project switch: **partial**. Decay reduces stale counts over time, but the lag is proportional to how large the counts grew. A heavily used entry from yesterday's project retains elevated frequency for longer than a newer entry from today's.
++- Criterion 4 — tuning surface: **weak**. The decay rate is a free parameter; too aggressive and the policy degrades toward LRU, too conservative and stale favorites persist. Calibrating it for a workload that mixes short comparisons with long screenings is non-obvious.
++
++**Summary.** Better retention of popular clips than LRU, but counter maintenance and the decay-rate parameter add work and can leave yesterday's favorites entrenched.
++
++---
++
++### 2Q
++
++**Description.** Two queues partition the cache: A1, a FIFO probationary queue with a fixed size limit (default 3 GiB), and Am, an LRU main queue with the remaining capacity (default 9 GiB). A newly admitted entry enters A1. When a request hits an A1 entry, it is promoted to the MRU end of Am. A request hitting an Am entry moves it to the MRU end of Am. Eviction targets A1's head (oldest probationary entry) when A1 is at its size limit; it targets Am's LRU end when Am would exceed its capacity after a promotion. One startup parameter: the A1 size limit.
++
++**Analysis.**
++- Gate — external interface unchanged: **passes**. Changes are confined to the replacement-tracking data structures inside the preview worker.
++- Criterion 1 — screening-scan resistance: **strong**. Screening sheets enter A1 and cycle through it FIFO. Unless an editor revisits a screening sheet (promoting it to Am), screening traffic never reaches Am. Comparison sheets, revisited across sessions, live in Am and are not directly displaced by screening load — Am can only be affected if A1 fills and the total cache reaches its ceiling, causing Am-LRU eviction to make room for a promotion.
++- Criterion 2 — bookkeeping cost: **partial**. Two queue data structures instead of one; O(1) per hit and per admission (hash map to find the entry, pointer updates to move it). No decay traversal. The overhead relative to LRU is one extra queue and one extra pointer check per operation — constant-factor, not asymptotically worse.
++- Criterion 3 — adaptation after project switch: **strong** for Am, **strong** for A1. Am is LRU, so entries from a finished project fall toward the LRU end as new comparison work arrives. A1 is FIFO, so old probationary entries age out directly.
++- Criterion 4 — tuning surface: **partial**. One parameter (A1 size limit) with an interpretable meaning: "how many one-use sheets can a screening add before scan pressure reaches Am." The 3 GiB default accommodates roughly 1,500 screening sheets at the typical 2 MiB per sheet — a concrete, legible starting point.
++
++**Summary.** Strong scan resistance with moderate bookkeeping cost and one interpretable tuning parameter.
++
++## Selection
++
++**2Q** is chosen.
++
++The decision turns on Criterion 1 (screening-scan resistance, major). LRU fails it directly: every screening sheet evicted is a comparison sheet displaced, and the workload — long screenings interleaved with focused comparisons — is exactly the pattern LRU handles worst. Frequency-with-aging offers partial resistance, but that protection depends on the decay rate and erodes during long screenings; it also introduces the hardest parameter to calibrate (decay rate) in exchange for the partial benefit.
++
++2Q addresses the criterion structurally rather than statistically: screening sheets are physically separated into A1 and cannot reach Am without a second access. The protection is unconditional on workload shape.
++
++The cost is Criterion 2 (bookkeeping cost, major): 2Q is not as cheap as LRU. The actual overhead is one extra queue and a constant-factor increase per operation; it does not introduce O(n) traversal or a sorted structure. On a machine where rendering itself costs 450 ms, the per-request pointer update difference is not the binding constraint.
++
++On Criterion 3 (adaptation, moderate), 2Q is as good as LRU: Am is LRU, so project-switch adaptation in the main queue is identical. On Criterion 4 (tuning surface, minor), 2Q's one parameter (A1 size limit) is more interpretable than the frequency decay rate it avoids.
++
++This decision commits to the two-queue data structure and the A1/Am split. It forecloses the simpler LRU implementation. It obligates the LLD to specify the A1 capacity parameter, its default, and its valid range, and to describe eviction behavior during both admission and promotion. It does not obligate any change to the external HTTP interface, the render queue, or the disk layout.
++
++The tenet engaged: *Keep cache paths and replacement bookkeeping private to the preview worker.* 2Q satisfies it fully — all policy state is internal and invisible to the review API.
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..139beca 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,36 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The cache uses **2Q replacement**. Two internal queues partition the occupied space:
++
++- **A1 (probationary queue)**: a FIFO queue holding entries seen exactly once. Its capacity is configurable at startup; the default is 3 GiB (25% of the 12 GiB ceiling). At the typical 2 MiB per sheet this accommodates roughly 1,500 screening sheets before A1 itself must evict.
++- **Am (main queue)**: an LRU queue holding entries that have been accessed more than once. Am's capacity is the total ceiling minus the A1 size limit (9 GiB at defaults). Because the two limits sum to the total ceiling, the total cannot be exceeded without one queue being at its own limit.
++
++**Admission.** A completed sheet not already cached is admitted to the tail of A1. If A1 is at its configured size limit, one or more A1 entries are evicted from the head (oldest) until there is room.
++
++**Promotion.** A cache hit on an A1 entry moves that entry to the MRU end of Am. Because the entry was already counted in the total, total occupancy does not change. However, if Am's occupancy after receiving the entry would exceed Am's own capacity, one or more LRU entries are evicted from Am before the promotion completes. (Am's capacity equals the total ceiling minus the A1 size limit — 9 GiB at the defaults.)
++
++**Cache hit in Am.** Move the entry to the MRU end of Am; no change in total size.
++
++**Screening-scan resistance.** Sequential screening fills A1 without promoting to Am. Because A1 is FIFO-evicted before Am is touched, screening runs cannot directly evict comparison sheets from Am. Sheets revisited across sessions promote into Am and remain there until Am itself fills.
++
++The A1 capacity parameter is read at startup. Increasing it tolerates longer screening runs before any A1 eviction forces cascading Am pressure (by pushing total occupancy to the ceiling); decreasing it reserves more headroom for comparison work. The default of 3 GiB is a reasonable starting point for the pilot load; it is expected to be tuned once production workload data is available.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Cache replacement policy | 2Q | LRU; frequency-based eviction with aging | LRU is simple but is vulnerable to sequential screening scans evicting comparison sheets directly from the single queue. Aged frequency counters protect repeatedly popular clips but add counter state and can retain stale favorites after a project switch. 2Q isolates first-use entries in A1 so screening scans cannot reach Am. The bookkeeping cost is two queues plus a startup size parameter. See `decisions/eviction-policy.md`. |
++| A1 default capacity | 3 GiB (25% of 12 GiB) | 10–50% variants | Fits ~1,500 typical screening sheets before A1 self-evicts; leaves 9 GiB for comparison work. Startup-configurable; expected to be tuned from pilot data. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Eviction policy: 2Q with configurable A1 capacity.
++
++### Deferred
++
++1. Whether the A1 capacity parameter should be expressed as a ratio of the total limit rather than an absolute byte count, so that changing the 12 GiB ceiling does not silently unbalance the split.
++2. Whether per-queue occupancy and hit rates are exposed through worker health metrics.
++3. Whether the A1 capacity parameter is reloadable at runtime without a restart.

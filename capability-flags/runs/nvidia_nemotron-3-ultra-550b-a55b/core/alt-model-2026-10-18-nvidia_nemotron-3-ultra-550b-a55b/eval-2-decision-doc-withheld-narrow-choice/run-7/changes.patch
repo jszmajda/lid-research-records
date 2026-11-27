@@ -1,0 +1,128 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..f1cb1e3 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using a 2Q eviction policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/decisions/001-2q-eviction-policy.md b/docs/intent/previews/decisions/001-2q-eviction-policy.md
+new file mode 100644
+index 0000000..cdde0f1
+--- /dev/null
++++ b/docs/intent/previews/decisions/001-2q-eviction-policy.md
+@@ -0,0 +1,62 @@
++# Decision: 2Q Eviction Policy for Preview Cache
++
++**Status**: Accepted
++**Date**: 2026-10-18
++**Segment**: previews
++**Related specs**: PREVIEW-006 through PREVIEW-011
++
++## Context
++
++The preview worker maintains a private 12 GiB cache of rendered JPEG contact sheets. Workloads alternate between:
++- Long sequential screenings (many one-use sheets)
++- Comparison sessions (repeated access to a small working set)
++
++The eviction policy must protect comparison sheets during screenings while adapting when editors switch projects. Three candidates were evaluated.
++
++## Options Considered
++
++### Option A: LRU (Least Recently Used)
++- **Mechanism**: Single queue, evict tail on space pressure
++- **Bookkeeping**: Minimal (one timestamp or list position per entry)
++- **Scan resistance**: Poor — a long screening evicts the comparison working set
++- **Project-switch adaptation**: Fast — old project entries age out quickly
++- **Comparison-sheet retention**: Weak — no distinction between one-use and reused
++
++### Option B: Frequency-Based with Aging
++- **Mechanism**: Access counter per entry, periodic decay (e.g., halve counters every N minutes)
++- **Bookkeeping**: Counter per entry + background aging job
++- **Scan resistance**: Moderate — one-use sheets stay at count=1, but aging slowly promotes them
++- **Project-switch adaptation**: Slow — yesterday's favorites retain high counts until aging catches up
++- **Comparison-sheet retention**: Strong for repeatedly popular clips
++
++### Option C: 2Q (Two Queues) — **Selected**
++- **Mechanism**: Two LRU queues (A1 for first-use, Am for promoted entries). New entries enter A1 head. On second access, promote to Am head. Evict A1 tail first, then Am tail.
++- **Bookkeeping**: Two queues + queue membership per entry (no counters, no aging job)
++- **Scan resistance**: Strong — one-use entries stay in A1 and are evicted first
++- **Project-switch adaptation**: Moderate — A1 turns over fast; Am retains promoted entries until displaced
++- **Comparison-sheet retention**: Strong — promoted entries live in Am with 75% of budget
++
++## Decision Criteria
++
++| Criterion | Weight | LRU | Frequency+Aging | 2Q |
++|-----------|--------|-----|-----------------|-----|
++| Scan resistance (protect comparison sheets) | High | ❌ | ⚠️ | ✅ |
++| Bookkeeping complexity | Medium | ✅ | ❌ | ⚠️ |
++| Project-switch adaptation | Medium | ✅ | ❌ | ⚠️ |
++| Comparison-sheet retention | High | ❌ | ✅ | ✅ |
++| Implementation risk | Low | ✅ | ❌ | ⚠️ |
++
++## Selection
++
++**2Q (Option C)** selected. The 25%/75% A1/Am split (3 GiB / 9 GiB) reserves the majority of cache for promoted entries while giving sequential scans a bounded buffer. All three policies keep the external HTTP interface, render queue concurrency (4), and 12 GiB disk budget unchanged — the decision is internal to the preview worker.
++
++## Consequences
++
++- **Positive**: Comparison sheets survive long screenings; no background aging thread; simpler than frequency+aging.
++- **Negative**: Two queues to manage; queue-size split (25/75) is a tuning parameter; project-switch lag slightly worse than pure LRU (Am entries persist).
++- **Follow-on**: PREVIEW-006 through PREVIEW-011 encode the 2Q mechanics in specs.
++
++## Rejected Alternatives
++
++- **LRU**: Rejected because it fails the primary goal — protecting comparison sheets during screenings.
++- **Frequency+Aging**: Rejected due to counter maintenance overhead and slow project-switch adaptation; the aging job adds operational complexity.
+\ No newline at end of file
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..5a61425 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload. After evaluation, **2Q** is selected to protect repeatedly accessed sheets from eviction during long sequential screenings.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,17 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The cache uses a **2Q eviction policy** with two queues:
++
++- **Am queue (A1)**: First-use entries. New entries are inserted at the head of A1. On each cache hit in A1, the entry is promoted to the head of the Am queue. When A1 exceeds its size limit, the tail entry is evicted.
++- **Am queue (A2)**: Reused entries. Entries promoted from A1 on their second access enter at the head of Am. On each cache hit in Am, the entry is moved to the head of Am. When Am exceeds its size limit, the tail entry is evicted.
++
++The total cache size (A1 + Am) must not exceed 12 GiB. The A1 size limit is set to 25% of the total cache budget (3 GiB); the Am limit is the remainder (9 GiB). Both limits are enforced in bytes of cached JPEG data.
++
++Eviction order: when admitting a new entry would exceed the total budget, evict from A1 tail first until A1 is within its limit, then evict from Am tail. This ensures one-use entries from sequential scans are evicted before promoted comparison sheets.
++
++## Decisions & Alternatives
++
++| Decision | Alternatives Considered | Rationale |
++|----------|------------------------|-----------|
++| 2Q eviction policy with 25%/75% A1/Am split | LRU; Frequency-based with aging | 2Q protects repeatedly accessed comparison sheets during long sequential screenings. LRU evicts comparison sheets during scans. Frequency-based adds counter maintenance and ages slowly on project switches. The 25% A1 split reserves space for the working set while limiting scan pollution. All policies keep the external interface, queue concurrency, and disk budget unchanged. See [decision doc](../decisions/001-2q-eviction-policy.md). |
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..844c191 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,9 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++- [ ] **PREVIEW-006**: When a preview is accessed for the first time and admitted to the cache, the system SHALL place it in the A1 queue at the head position.
++- [ ] **PREVIEW-007**: When a preview in the A1 queue is accessed again, the system SHALL promote it to the head of the Am queue.
++- [ ] **PREVIEW-008**: When a preview in the Am queue is accessed, the system SHALL move it to the head of the Am queue.
++- [ ] **PREVIEW-009**: When the A1 queue exceeds 3 GiB, the system SHALL evict entries from the tail of A1 until it is within the limit.
++- [ ] **PREVIEW-010**: When the Am queue exceeds 9 GiB, the system SHALL evict entries from the tail of Am until it is within the limit.
++- [ ] **PREVIEW-011**: When admitting a new preview would exceed the total 12 GiB budget, the system SHALL evict from A1 tail first, then from Am tail, until the total is within budget.

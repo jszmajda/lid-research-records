@@ -1,0 +1,104 @@
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..22d8f3d 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,92 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Philosophy
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
+-## Architecture
++Registry lookup must be fast (meeting a 250 ms budget), never require network access, and tolerate snapshot failures gracefully. The lookup backend is local—no external services or lab network dependency. This choice is load-bearing: it removes a potential point of failure and keeps the design contained within the registry component's boundaries.
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++## Architecture and Interfaces
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed; the certificates node uses only this interface and never accesses registry storage directly.
+ 
+-## Snapshot Import
++Snapshot validation, index preparation, and lookup all belong to this node. The chosen backend is a local embedded SQLite index—one index database per snapshot, built during import, queried at lookup time.
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++## Snapshot Storage and Import Flow
++
++Each snapshot is a signed archive containing:
++- Newline-delimited JSON records (one per line)
++- Schema version and snapshot date metadata
++- Signature manifest
++
++Import flow:
++1. Validate the signature using the bundled public key
++2. Reject unsupported schema versions
++3. Parse all records and validate serial-number uniqueness
++4. Build a SQLite index on the normalized serial number (whitespace trimmed, ASCII letters uppercased) plus additional fields for lookup
++5. Write the index to a new file in a staging directory, along with the raw snapshot and metadata
++6. Atomically rename the staging directory to activate it
++
++An import failure rejects the entire snapshot and leaves the current active snapshot untouched.
++
++## SQLite Index Schema
++
++The index database contains a single table:
++
++```sql
++CREATE TABLE records (
++  serial TEXT NOT NULL PRIMARY KEY,
++  calibration_date TEXT NOT NULL,
++  due_date TEXT NOT NULL,
++  description TEXT NOT NULL
++);
++CREATE INDEX idx_serial ON records(serial);
++```
++
++The `serial` field stores the normalized serial number (whitespace trimmed, ASCII letters uppercased). Calibration date, due date, and description are stored as-is from the snapshot. The snapshot date is not stored in the index; instead, it is tracked in a separate metadata file alongside the index.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize the input serial number (trim surrounding whitespace, uppercase ASCII letters; punctuation remains significant). Query the index by normalized serial. Return `Found(record fields + snapshot date)` on a match, or `NotFound(snapshot date)` if no record exists. The snapshot date is always included in the result, sourced from the metadata file.
++
++Lookup cost is bounded by SQLite's B-tree structure and should complete within the 250 ms budget on kiosk hardware (4 GB RAM, typical CPU). A single index lookup plus the metadata file read is the expected path.
++
++## Atomic Snapshot Activation
++
++Snapshots are activated using a two-directory scheme:
++- `active/` — the currently in-use snapshot (index + metadata + raw snapshot data)
++- `staging/` — the candidate snapshot being validated and indexed
++
++Only after all validation and indexing succeeds does the staging directory atomically replace the active directory (rename). This ensures that in the event of import failure, metadata corruption, or index build failure, the previous snapshot remains accessible and usable.
++
++## Data Storage on Kiosk
++
++Storage layout:
++```
++registry-data/
++  active/
++    index.db          (SQLite index for the current snapshot)
++    metadata.json     (snapshot date and schema version)
++    snapshot.jsonl    (raw snapshot, preserved for offline access)
++  staging/            (populated during import, used only during validation)
++```
++
++With 90,000 records averaging ~200 bytes per record in JSON form, the snapshot file is roughly 18 MB. The SQLite index is typically 50–70% of the snapshot size. This fits comfortably within typical kiosk disk allocations and the 150 MB snapshot size limit stated in the HLD.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory, managed search service | Local storage avoids lab-network dependency, reducing a potential point of failure and keeping the design self-contained. SQLite is embedded (no separate service to run), indexes are fast (well-suited to 90k records), and each kiosk validates and rebuilds its own index when a snapshot arrives—this stays entirely within the registry component. On-site HTTPS would introduce network timeout handling and lab-network dependency; managed services add recurring cost, credentials, and external connectivity as registry concerns. |
++| Index format | SQLite single-table B-tree | Flat CSV with linear scan, custom binary index, in-memory hash table | SQLite provides reliable, proven index performance. Single-table design is simple to validate and rebuild. B-tree lookups meet the 250 ms requirement. Flat CSV would not meet the performance goal on 90k records. A custom binary format would add encoding/validation complexity. In-memory hash table would require rebuilding at startup and risks memory pressure on resource-constrained kiosks. |
++| Snapshot atomicity | Two-directory swap (staging → active) | Partial-file rename, version-number flag, symlink rotation | Directory-level atomic rename is portable and reliable across filesystems, reducing the risk of a partial import being visible. Version-number flags are less reliable under concurrent access. Symlink rotation is more complex and error-prone on some filesystems. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Local SQLite index selected as the lookup backend (2026-10-10)
++
++### Deferred
++1. Whether to compress the raw snapshot file for storage efficiency (deferred pending actual on-disk measurements and kiosk storage capacity assessment)
++2. Whether to keep the raw snapshot once indexed, or delete it to save space (deferred pending technician offline-access requirements)

@@ -1,0 +1,3 @@
+Yes. This choice still has credible alternatives, and a future reader could reasonably revisit 2Q without understanding why scan resistance outweighed its extra bookkeeping. A decision doc would preserve the tradeoffs and selection rationale more usefully than a brief LLD table row alone. I’d place it under `docs/intent/previews/decisions/` and link it from the preview design.
+
+The HLD update is ready for review. Please approve it so I can continue to the preview LLD and develop the decision doc there.

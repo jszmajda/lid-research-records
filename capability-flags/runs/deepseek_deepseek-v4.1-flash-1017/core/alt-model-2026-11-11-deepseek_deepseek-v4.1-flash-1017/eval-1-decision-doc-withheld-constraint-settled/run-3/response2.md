@@ -1,0 +1,1 @@
+Overkill — a Decisions row is enough. The choice is confined to the registry node, leaves the certificate interface unchanged, and doesn’t force other nodes to be sized around it, so the row already added at `registry-design.md` carries the rationale without a standalone doc.

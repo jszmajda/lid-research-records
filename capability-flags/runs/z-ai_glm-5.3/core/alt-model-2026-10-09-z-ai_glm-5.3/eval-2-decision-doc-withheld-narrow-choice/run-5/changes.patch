@@ -1,0 +1,71 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..dbc4635 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache that uses 2Q replacement.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..237ab33 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The cache therefore separates first-use sheets from sheets that have been reused, so a screening scan cannot displace the working set that editors keep coming back to.
+ 
+ ## Architecture
+ 
+@@ -21,6 +21,42 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The cache uses 2Q replacement with two queues:
++
++- **First-use queue** — FIFO, byte budget initially 3 GiB.
++- **Reused queue** — LRU, byte budget initially 9 GiB.
++
++A newly completed sheet is admitted to the first-use queue. If that queue would exceed its budget, the worker evicts the oldest first-use sheets until it fits. A hit on a first-use sheet promotes it to the reused queue; if the reused queue would exceed its budget, the worker evicts its least recently used sheets until it fits. A hit on a reused sheet refreshes its recency.
++
++A request that arrives while a render is still pending does not count as a reuse for replacement purposes. Only a hit on an admitted sheet changes queue state.
++
++The queue budgets are fixed rather than shared, so a long screening scan can evict only from the first-use queue and cannot displace the reused working set. The split is private worker configuration; the initial 25% / 75% ratio is a starting point to be tuned against observed production traffic.
++
++If a completed sheet is larger than its target queue's byte budget even after evicting every eligible victim, the worker treats the render as failed. A cache file that is missing or unreadable is treated as a cache miss and re-rendered.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q (first-use FIFO + reused LRU) | LRU; frequency-based eviction with aging | Long screenings introduce many one-use sheets that would flush an LRU cache, while aged frequency counters can lag a project switch and add counter maintenance. 2Q keeps reused comparison sheets isolated from scan traffic at the cost of two queues and a tunable split. |
++| Queue split | Fixed byte budgets, initially 25% first-use / 75% reused | Dynamic borrowing between queues | A fixed split preserves scan protection: first-use traffic cannot grow into the reused budget during a long screening. The ratio remains tunable as worker-private configuration. |
++| Pending requests and replacement state | Pending misses do not alter queue state | Count concurrent misses toward reuse | Deduplication exists to collapse concurrent demand; counting those hits would make popularity depend on render latency rather than actual reuse after admission. |
++| Corrupt or missing cache file | Treat as a cache miss and re-render | Fail the request | A cache miss is ordinary behavior, and the immutable source can always regenerate the sheet. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Use 2Q replacement rather than LRU or aged-frequency eviction.
++2. ✅ Use fixed queue budgets, initially 25% first-use and 75% reused.
++
++### Deferred
++
++1. Tune the queue split after observing production screening and comparison mixes.
++
++## References
++
++- `docs/high-level-design.md`
++- `docs/intent/review-api/review-api-design.md`

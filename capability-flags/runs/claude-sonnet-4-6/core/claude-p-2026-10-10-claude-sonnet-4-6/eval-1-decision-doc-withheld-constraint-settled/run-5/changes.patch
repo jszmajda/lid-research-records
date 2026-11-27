@@ -1,0 +1,105 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..1276000 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, SQLite index management, and lookup.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..751e530 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,81 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and receive its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. The kiosk runs with no network route during normal operation; all lookup data must reside on local storage.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning `Found(record, snapshotDate)`, `NotFound(snapshotDate)`, or `NotReady` when no snapshot has been imported yet. Record fields and result types are fixed. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++The lookup backend is a local embedded SQLite database. Snapshot import builds a staging database file, validates it completely, then replaces the active database file with a filesystem rename. Lookups open the active database file read-only per call.
++
++## SQLite Schema
++
++```sql
++CREATE TABLE records (
++    serial      TEXT NOT NULL PRIMARY KEY,
++    description TEXT NOT NULL,
++    cal_date    TEXT NOT NULL,  -- ISO 8601, e.g. "2025-03-15"
++    due_date    TEXT NOT NULL   -- ISO 8601, e.g. "2026-03-15"
++);
++CREATE TABLE meta (
++    key   TEXT NOT NULL PRIMARY KEY,
++    value TEXT NOT NULL
++    -- rows: "schema_version" (text), "snapshot_date" (ISO 8601 date)
++);
++```
++
++The `records` PRIMARY KEY on `serial` enforces uniqueness and provides the lookup index. Dates are stored as ISO 8601 text; lexicographic ordering preserves date semantics and the certificate component can display them directly. The `meta` table holds snapshot-level values read on every lookup.
++
++## File Locations
++
++| File | Path |
++|------|------|
++| Active database | `<data-dir>/registry.db` |
++| Staging database | `<data-dir>/registry.db.staging` |
++
++`data-dir` is a directory path configured at application startup. Both paths are on the same local filesystem so that the activation rename is within a directory. If `registry.db.staging` exists at startup, it is deleted before any import begins; it is a remnant of a previously interrupted import.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++1. Reject the snapshot if its signature does not verify against the bundled public key.
++2. Reject the snapshot if its schema version is not supported.
++3. Delete any pre-existing `registry.db.staging`.
++4. Open `registry.db.staging` for writing and create the schema.
++5. Insert all records from the snapshot. A duplicate serial number causes immediate failure: close and delete the staging file, retain the active database, and report the error.
++6. Write `schema_version` and `snapshot_date` into the staging `meta` table.
++7. Close the staging database.
++8. Rename `registry.db.staging` to `registry.db`, atomically replacing any existing active database. On local filesystems (ext4, APFS, NTFS) rename within a directory is atomic.
++9. If the rename fails, delete the staging file and report the error; the previous active database remains.
++
++At no point does the import expose a partially written state to lookup callers. Steps 1–7 operate only on the staging file.
++
++## Lookup
++
++Per call:
++
++1. If `registry.db` does not exist, return `NotReady`.
++2. Open `registry.db` read-only.
++3. Read `snapshot_date` from `meta`.
++4. Normalize the incoming serial: strip surrounding whitespace; uppercase ASCII letters; leave punctuation unchanged.
++5. `SELECT description, cal_date, due_date FROM records WHERE serial = ?` with the normalized serial.
++6. Return `Found(record, snapshotDate)` or `NotFound(snapshotDate)`.
++7. Close the connection.
++
++Opening a new read-only connection per lookup avoids any coordination with the activation rename: after the rename, new lookups naturally open the new file. At 90,000 records and low kiosk concurrency, connection-open overhead is negligible.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite | On-site HTTPS directory; managed search service | Both alternatives require runtime network access, which the HLD tenet prohibits. SQLite meets the 250 ms latency goal on kiosk hardware with no external service. |
++| Activation mechanism | Filesystem rename of staging file | In-place overwrite; symlink swap | Rename within a directory is atomic on the target local filesystems; no partially-imported state is ever visible to lookup callers. |
++| Connection lifecycle | Per-lookup read-only open/close | Persistent shared connection | Eliminates coordination between in-flight lookups and activation. After the rename, new connections open the new file naturally. No connection pooling needed at this concurrency level. |
++| Empty-state result type | `NotReady` variant | `NotFound` with sentinel date | A sentinel date would propagate into certificates as a plausible-looking date. `NotReady` lets the application layer block certificate creation explicitly without inspecting a sentinel string. |
++| Date storage | ISO 8601 TEXT | SQLite REAL (Julian Day); INTEGER (Unix epoch) | Text dates sort correctly lexicographically, are readable during debugging, and the certificate component can display them without conversion. |
+ 
+-## Lookup Behavior
++## Open Questions & Future Decisions
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++### Deferred
++1. Whether to pre-warm the page cache after activation to guarantee the 250 ms goal from a cold kiosk start.
++2. Whether the application layer should expose a distinct UI state for `NotReady` or collapse it with a known-missing serial.

@@ -1,0 +1,6 @@
+I'd recommend sticking with the `Decisions & Alternatives` row rather than writing a full decision doc, for two reasons:
+
+1. **Blast radius is local to one node.** Nothing outside `previews` is sized around 2Q — `review-api`, the HTTP contract, the render queue, and the 12 GiB budget are all unchanged. If the workload shifts later, swapping the replacement policy is a local change inside the preview worker.
+2. **How hard a decision was to reach isn't the bar.** Decision docs are reserved for choices that stay live for a cold reader *and* carry wider system intent that other nodes lean on; a long debate can still land cleanly as a table row, and keeping decision docs rare prevents `decisions/` from becoming noise.
+
+That said, it's your call. If you expect future maintainers to keep re-litigating 2Q vs. LRU and aged frequency unless the full weighted criteria and option analysis are written out, say the word and I'll write `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from the table row. Otherwise, we can keep the row and continue with your review of `previews-design.md` and the Phase 2 edge-case probe (items 1–7).

@@ -1,0 +1,5 @@
+I recommend keeping it as a **Decisions & Alternatives row**, not a full decision doc.
+
+The debate was substantial, but the landed choice affects only the preview cache’s private bookkeeping. The LLD can preserve the complete rationale in one row: 2Q protects comparison sheets from sequential scans, while accepting additional queues and tuning over LRU or aged frequency eviction. No sibling component or architectural boundary depends on re-running that judgment.
+
+A decision doc would be justified if the policy constrained other design nodes or required several durable criteria to understand the choice. Here, the length of the argument alone does not make the document useful. If you still want one for team-history reasons, I can add it, but it would exceed the project’s decision-doc threshold.

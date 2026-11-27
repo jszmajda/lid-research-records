@@ -1,0 +1,15 @@
+Written: `docs/decisions/delivery-approach.md` (project-level decision doc, `node: high-level-design`), linked from the HLD's Key Design Decisions row and a new HLD References section.
+
+**How it's structured** — written to be read cold, so a new person can re-run the judgment rather than just learn the outcome:
+
+- **Context** — why the choice exists: freshness target, 800 browsers, 40 markets; that delivery cost scales with concurrent browsers and published market hours, not with edits; that the data is operational, not customer records, so the case is coupling and cost rather than regulation; and what's at stake in either direction (a too-slow route erodes trust; a too-bound route is hard to reverse once browsers, delivery code, and store publication are built on it).
+- **Decision Elements** — no gate eliminated an option (stated plainly, with the inherited constraints listed as background), then eight weighted criteria: update freshness, recurring cost, operational burden, vendor coupling (all *major*); browser-side complexity, store-side complexity, availability accountability (*moderate*); data handling (*minor*).
+- **Options in the Domain** — one prose section each for five-second polling, self-hosted WebSockets, and a hosted realtime service, each with its strongest honest representation, a concrete demonstration, and a verdict-and-basis bullet per criterion. Criteria that cut *against* the chosen option are included: polling wins on operational burden, vendor coupling, and availability accountability; the hosted service wins on operational burden and browser-side complexity.
+- **Selection** — the split stated plainly: freshness eliminates polling; the remaining two split cleanly on cost and coupling versus operational burden, and the tie breaks on what the project said it would own. Then the three downstream obligations (replayable revisions + reliable publication; socket sessions sized for 800 browsers and reconnect waves; browser reconnect/resumption with failures never looking like an unchanged board), a tenet-closure note, and a "reconsider if" line.
+
+**Two judgments still open from my last message — I did not settle either on your behalf:**
+
+1. **Tenet.** The doc's Tenet-closure section records that no tenet decided this choice; the lean that did (accept operational work to avoid a recurring vendor fee and coupling) currently lives only in the decision and the HLD row. If you want it as a project tenet, say so and I'll add it to the HLD, revise the "self-hosted and managed infrastructure are both permitted" tenet for consistency, and update the doc's closure section.
+2. **Cross-segment cascade.** `docs/intent/access/access-design.md:10` still says authorization is "independent of the still-open change-delivery approach" — now stale wording. One-line edit in the access segment, awaiting your go-ahead.
+
+The three nodes stay untouched until you say go.

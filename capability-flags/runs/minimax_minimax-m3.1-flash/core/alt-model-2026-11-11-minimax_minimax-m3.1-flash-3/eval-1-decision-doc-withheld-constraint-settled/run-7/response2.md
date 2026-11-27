@@ -1,0 +1,7 @@
+Overkill — a table row is the right home, and it already exists.
+
+Applying the test from the landed state rather than the deliberation: a cold reader of the registry LLD sees "local embedded SQLite index" and the two rejected alternatives named in the same row. Would they re-litigate it? No — the HLD tenet that all lookup completes from files on the kiosk (`docs/high-level-design.md:18`) eliminates both network options before any of their tradeoffs matter. The choice is settled by an inherited constraint, affects only the registry node, and nothing downstream is sized around it (`findBySerial` is unchanged, so the certificates node never sees the backend). Three of the skill's explicit "don't offer one" cases apply at once. The length of the debate was a symptom, not the test.
+
+I made one small edit so the gate is visible to a cold reader: the row now names the HLD tenet that rules the alternatives out (`docs/intent/registry/registry-design.md:139`), rather than only implying it.
+
+What would change the answer: if the offline tenet is ever relaxed, or if per-kiosk rebuild cost turns out to dominate at kiosk counts well above six, the choice stops being settled and the criteria would need re-running — a decision doc would earn its place then.

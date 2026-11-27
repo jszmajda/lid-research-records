@@ -1,0 +1,1 @@
+Overkill. The HLD tenet that all lookups use kiosk files with no runtime network access already eliminates both service-backed options, so the choice is settled by an inherited constraint rather than remaining genuinely live. The existing Decisions & Alternatives row is enough; a decision doc would only earn its place if that tenet were later reconsidered.

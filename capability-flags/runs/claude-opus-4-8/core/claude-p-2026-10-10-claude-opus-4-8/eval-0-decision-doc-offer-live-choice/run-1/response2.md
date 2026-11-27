@@ -1,0 +1,10 @@
+Written: `docs/decisions/delivery-transport.md`, a project-level decision doc owned by the HLD, linked from the Key Design Decisions entry. It's built so a cold reader can re-run the judgment:
+
+- **Context** — why the transport choice exists and that it sizes the three downstream nodes; all candidates can meet freshness/scale/recovery, so the choice is about which secondary costs to own.
+- **Decision Elements** — five weighted criteria (latency *moderate*, vendor independence *major*, recurring cost *major*, operational burden *moderate*, store read load *minor*). No gates, because none of the options is eliminated on feasibility — I noted that explicitly rather than inventing a gate everything passes.
+- **Options in the Domain** — polling, self-hosted WebSockets, hosted service, each given its strongest honest description and a verdict-led bullet per criterion.
+- **Selection** — self-hosted WebSockets, winning both major criteria while taking latency off polling, with operational burden named as the one weak criterion accepted deliberately — your stated trade. It also spells out what the choice obligates downstream.
+
+**One thing I need your judgment on.** Writing this surfaced that the decision turns on *vendor independence* and *recurring cost*, but **no tenet actually leans that way** — your tenet *"Self-hosted and managed infrastructure are both permitted"* permits either direction. So this was a preference exercised within that permission, not a tenet applied. I recorded it that way honestly in the doc. The question for you: is "prefer vendor independence for core paths" a standing lean you'd want future, unanticipated choices to inherit (e.g. the change store's or ops' hosting)? If yes, it's worth adding as a tenet — and it would then be *why* this decision went the way it did, rather than a one-off. If this was genuinely a one-time call, we leave the tenets as they are. I didn't want to add or reword a tenet on your behalf.
+
+This remains the Phase 1 stop. Let me know on the tenet, and we can move to the three nodes (change-store, delivery, browser-sync as separate LLD segments, pausing between).

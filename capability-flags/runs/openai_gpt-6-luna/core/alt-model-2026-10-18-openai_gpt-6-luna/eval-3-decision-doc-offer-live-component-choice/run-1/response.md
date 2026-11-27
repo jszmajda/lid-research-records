@@ -1,0 +1,3 @@
+**Phase 1 — HLD check:** The project architecture still places the concurrency mechanism in `record-store`; the selected policy doesn’t change the component boundaries. I updated `docs/high-level-design.md` to reflect that the policy is selected and that tablet-sync and review-export designs follow completion of the record-store contract.
+
+The record-store design itself is unchanged so far. **Do you approve this HLD update so I can continue to Phase 2 and complete the record-store LLD?**

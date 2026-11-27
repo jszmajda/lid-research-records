@@ -1,0 +1,5 @@
+My honest read: no — it doesn't clear the bar, and the length of the argument isn't the test. The question is whether a cold reader of the *landed* design would question the choice or be tempted to reverse it. Here, 2Q is the canonical answer to exactly this workload shape (scan resistance + a small re-referenced set), every alternative and the reasoning is already in the Decisions & Alternatives table, and nothing else in the system is sized around the result — the interface, queue concurrency, and disk budget are untouched, per your own framing that all the changes stay inside the preview cache. A decision doc would memorialize a debate whose outcome now reads as native; a directory full of those is a smell the methodology explicitly warns about.
+
+The three meetings live on appropriately in the Decisions row, which is the sanctioned home for "we considered X and rejected it because Y."
+
+That said, it's your call — if you still want the doc, I'll write it. Either way, the Phase 2 stop is still open: the probe gaps (especially #1, eviction between lookup and completion) need your triage before I draft the 2Q EARS specs.

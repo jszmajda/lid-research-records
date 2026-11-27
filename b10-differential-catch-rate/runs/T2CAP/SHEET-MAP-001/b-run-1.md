@@ -1,0 +1,15 @@
+SHEET-TICK-001 — Ubiquitous. The sheets-view crate SHALL resolve each ledger `Symbol` to a GOOGLEFINANCE ticker by looking the symbol up in `config`'s `AliasMap`, and SHALL build every live-price formula from that resolved ticker, never from the raw ledger symbol.
+
+SHEET-TICK-002 — Ubiquitous (normalization). Before consulting the alias table, resolution SHALL normalize the lookup key by (a) trimming leading and trailing whitespace and (b) upper-casing it. Normalization applies to both the alias hit and the fallback path (`" brk"` → `BRK.B`; `" amzn "` → `AMZN`).
+
+SHEET-TICK-003 — Unwanted-behavior / fallback. IF the normalized symbol has no entry in the alias table, THEN resolution SHALL return the normalized symbol itself as the ticker (identity fallback) — not an error, not an empty ticker (`AMZN` → `AMZN`).
+
+SHEET-TICK-004 — Ubiquitous (Price formula form). The Positions `Price` cell SHALL be a live formula, exactly `=GOOGLEFINANCE("<ticker>","price")`, with the resolved ticker double-quoted and the attribute literal `"price"`. Aliased tickers appear in their GOOGLEFINANCE form (`BRK` → `BRK.B`; `AAPL` → `NASDAQ:AAPL`) and the raw symbol SHALL NOT appear as the quoted argument.
+
+SHEET-TICK-005 — Ubiquitous (companion quote-date rides the same ticker). The Positions `Quote Date` cell (column index 12, header `"Quote Date"`) SHALL be a live formula built from the *same* resolved ticker, exactly `=IFERROR(TEXT(INT(GOOGLEFINANCE("<ticker>","tradetime"))-DATE(1970,1,1),"0"),"")`: the `tradetime` attribute, truncated to a date serial, re-based to days since 1970-01-01 by subtracting `DATE(1970,1,1)`, rendered digits-only via `TEXT(…,"0")` so every locale formats it identically, and wrapped in `IFERROR` so a loading/errored quote renders the empty string rather than an error token.
+
+SHEET-TICK-006 — Ubiquitous (one row per symbol; the read-back key). Positions rendering SHALL emit exactly one row per symbol, since the marks read-back keys marks to symbols by row identity. Every rendered row carries a distinct value in the `Symbol` column.
+
+SHEET-TICK-007 — Unwanted-behavior (loud duplicate). IF the position source ever presents two rows for the same symbol, THEN rendering SHALL abort with `ViewError::DuplicateSymbolRow(symbol)` — returning `Err` rather than rendering both rows — and that error's display form SHALL be `DuplicateSymbolRow("AMZN")` (Debug-shaped, carrying the offending symbol). The guard is defensive: the real `Snapshot.positions` map makes the branch unreachable.
+
+SHEET-TICK-008 — Ubiquitous (symbol column is unnormalized). The `Symbol` column SHALL carry the ledger symbol as an engine `Value` (e.g. `"AMZN"`), while the ticker normalization/aliasing affects only the two formula cells; the alias resolution SHALL NOT rewrite the displayed symbol.

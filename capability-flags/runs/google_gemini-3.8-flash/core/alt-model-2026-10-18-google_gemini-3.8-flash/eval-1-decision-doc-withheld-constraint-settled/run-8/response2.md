@@ -1,0 +1,3 @@
+A full decision doc would be overkill; the row in the Decisions & Alternatives table is the right home. 
+
+Per the earns-its-place heuristic, a standalone doc is reserved for choices that stay genuinely live across multiple nodes. Here, inherited constraints (the HLD tenet forbidding runtime network access) eliminated the networked alternatives, the choice affects only the registry's internal storage without altering the certificate interface, and a single line of rationale settles it for any future cold reader.

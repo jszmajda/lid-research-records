@@ -1,0 +1,9 @@
+Done — the decision is written up as a full decision doc at `docs/intent/record-store/decisions/whole-visit-revisions.md`, linked from the record-store LLD's Decisions table (the duplicate "Rejected Alternative" prose in the LLD body is now a pointer to the doc, so the rationale lives in one place).
+
+The doc contains, per the decision-doc structure:
+
+- **Decision elements** — the two inherited tenet gates (no silent discard, explainable export) plus four weighted criteria, with *preserve whole-visit intent* and *merge-rule maintenance* marked major, *review volume* moderate, and *client-side complexity* minor.
+- **Options in the domain** — both approaches at their strongest honest representation, each with a worked example (the observer-name + missing-species conflict resolved by coordinator selection vs. silently combined by merge rules) and per-criterion analysis. It names the one condition under which field-aware merge should be reconsidered: if coordinator load from unrelated-field conflicts becomes the team's bottleneck.
+- **Selection** — why whole-visit revisions wins on the major criteria, and the downstream obligations as cascades: tablet-sync must retain base revision IDs, resubmit complete payloads against a new base, and explain superseded edits to workers; review-export must build the revision comparison workflow, drive resolution, and exclude `unresolved` visits from the export set.
+
+Still open from the Phase 2 stop: the twelve probe gaps (my suggested dispositions are in the list above — e.g., unknown base IDs rejected at validation, rule 1 suppressed while a visit is unresolved, rejection reasons enumerated for tablet-sync). Tell me which to land — or "take all your suggestions" — and approve the LLD, and I'll move to Phase 3 and update the EARS specs.

@@ -1,0 +1,115 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..45e5a17 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, the local lookup index, and serial-number lookup. Lookups are served from a local embedded SQLite index the registry builds and maintains on the kiosk; no lookup service is involved.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..69f47c9 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -11,14 +11,93 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. A record carries the serial number, equipment description, calibration date, and due date. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, and lookup all belong to this node. The lookup backend is a local embedded SQLite index that the registry builds and maintains on the kiosk; no registry lookup depends on a network service.
++
++## Registry Storage
++
++The registry keeps a small directory of files on the kiosk:
++
++| Path | Contents |
++|---|---|
++| `active` | Pointer file holding the digest of the active snapshot. Replaced atomically. |
++| `payload/<digest>.snapshot` | Retained snapshot payloads, named by the SHA-256 digest of their bytes. |
++| `index/<digest>.sqlite` | Lookup index built from the payload with that digest. |
++| `index/<digest>.sqlite.build` | Index under construction. Removed on failure and swept at startup. |
++
++The pointer is the single piece of state that says which snapshot is active. The payload and the index are derived from it and are named by its digest, so an import can write everything it needs before changing anything.
++
++## Lookup Index
++
++Each index is a single SQLite database file containing a `records` table (`serial` as primary key, holding the normalized serial, plus `description`, `calibrated_on`, `due_on`) and a single-row `meta` table (`snapshot_date`, `payload_digest`, `index_format_version`).
++
++A lookup opens the active index read-only, issues one primary-key query, and closes the file before returning. Opening by path on each lookup means an activation cannot leave a lookup holding a stale file handle, and opening a local database costs a small fraction of the lookup budget. The component never writes to an active index except by replacing the file.
++
++Ninety thousand records fit comfortably inside the kiosk's memory budget, and the index file stays well below the size of the payload it was built from. Because the primary key is the normalized serial number, a lookup touches one row.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Importing a snapshot proceeds in this order:
++
++1. Verify the signature over the payload bytes with the bundled public key. If the key is missing or unreadable, every import fails and the failure is reported.
++2. Reject unsupported schema versions.
++3. Parse the payload as newline-delimited JSON, one record at a time, and reject the payload if it is malformed, if a record is missing a required field or carries a malformed date or serial, or if two serials collide once normalized.
++4. Build a new index at `index/<digest>.sqlite.build`: write the records, then the `meta` row, commit, close, and flush the file to disk.
++5. Copy the payload to `payload/<digest>.snapshot` and flush it to disk.
++6. Replace the pointer file `active` with the digest, atomically, and flush the directory.
++
++The switch to the new snapshot is the single atomic replacement in step 6. Until it happens, lookups continue to use the previously active snapshot. If any step fails, the import is rejected, the previous pointer, payload, and index remain active, the build file is removed, and the failure is reported with a reason: invalid signature, unsupported schema version, malformed records, duplicate serial numbers, or an I/O failure. No partially written index is ever reachable by a lookup, and the previously active snapshot stays available throughout the import.
++
++After the pointer has been replaced, the payload and index files of the superseded snapshot are deleted.
++
++## Startup Recovery
++
++At startup the registry reads the pointer. A missing pointer means no snapshot has been imported and the registry has no active snapshot.
++
++When the pointer names a digest whose index file is missing, unreadable, or built in a different index format, the registry rebuilds that index from the retained payload, using the same parsing, validation, and normalization path as an import, and reports the rebuild. A rebuilt index is written to a build file and renamed into place, and the snapshot date is taken from the retained payload rather than from the damaged index.
++
++If the pointer names a digest whose payload is missing or whose bytes no longer match the digest, the registry cannot rebuild and reports the loss. A valid index for that digest still serves lookups; the missing payload only means the next rebuild would need a new snapshot from USB.
++
++Import and startup recovery never run at the same time. An import arriving while recovery is in progress waits for it.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation and internal whitespace remain significant. The snapshot date returned is the date carried by the snapshot itself, not the date of the import. The snapshot date is returned even when no matching record exists. A lookup never writes to the index and never contacts a network service.
++
++The same normalization function is used when writing records into an index, when rebuilding an index, and when looking up, so all three paths agree on what a serial is.
++
++## Registry Availability
++
++A kiosk has no active snapshot until a snapshot has been imported successfully. Before that point there is no index and no snapshot date, so the registry cannot answer a lookup. The result type used to represent that state is not settled; see Open Questions.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index on the kiosk | On-site HTTPS directory; managed search service | Kiosks have no network route during normal operation, so only a local index can serve lookups under the project tenet that lookups complete from files on the kiosk. A local index keeps lookups predictable and adds no service to operate. The cost is that each kiosk validates and rebuilds its own index when a snapshot arrives, and that work stays inside the registry component. |
++| Activation mechanism | Replace a single pointer file; name the payload and the index by the snapshot digest | Replace the index file in place; update rows inside one database; activate the index and the payload in two steps | One atomic pointer replacement is the only moment at which the active snapshot changes. Every other file is written before that moment and is invisible until it, so a failed or interrupted import cannot leave a partially visible snapshot. |
++| Snapshot payload retention | Keep the payload on the kiosk, content-addressed by digest | Discard the payload once the index is built; keep the payload at one fixed path | A retained payload lets the registry rebuild a missing or damaged index without a new snapshot from USB, and keeps the last valid snapshot available after a failed import. Naming it by digest keeps it linked to the index built from it and lets the superseded payload be deleted only after the new snapshot is active. |
++| Serial uniqueness | Reject a payload whose serials collide after normalization | Check uniqueness on the raw serial text | The index key is the normalized serial. Checking raw text lets two spellings of one serial pass validation and then collide while the index is written, which fails the import for the wrong reason and hides the real problem. |
++| Serial normalization | Normalize in one shared function before indexing, rebuilding, and querying; trim surrounding whitespace and uppercase ASCII letters only | Rely on SQLite's `NOCASE` collation; normalize only at query time | Normalizing in one place keeps the rule independent of the storage engine, keeps punctuation and internal whitespace significant, and keeps the write path and the read path in agreement. |
++| Date representation | ISO `YYYY-MM-DD` calendar dates for calibration date, due date, and snapshot date | Locale-formatted dates | The certificates node compares the due date against the current kiosk date to raise an overdue warning, which requires dates that sort correctly without locale parsing. |
++| Snapshot date source | The date carried inside the snapshot payload | The date the import happened on the kiosk | A snapshot dated last week imported today must still be reported as last week's data, so a technician can tell how old the records they are reading are. |
++| Index build | Stream the payload one record at a time; write records before the `meta` row; commit, close, and flush before activation | Load the whole payload into memory; write the metadata row first | Streaming keeps peak memory bounded on a 4 GB kiosk regardless of snapshot size. Writing the metadata row last means a build that dies partway leaves no `meta` row and cannot be mistaken for a complete index. |
++| Index format | A version number in the index `meta` row; an index built in another format is rebuilt | No version marker | A kiosk software upgrade that changes the index layout would otherwise leave an index that passes an existence check and fails at query time. |
++| Lookup connection | Open the active index read-only for each lookup and close it before returning | Hold one long-lived read-only connection | Opening by path keeps a lookup from holding a handle to a file that an activation is replacing, and the open cost is a small fraction of the lookup budget. |
++| Payload digest | SHA-256 over the payload bytes, computed on the kiosk | A digest read from the snapshot's signature manifest | Computing the digest locally also detects a payload altered on the kiosk after import, and gives the payload and its index a shared, verifiable name. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. How the registry represents the "no active snapshot yet" state to the certificates node.
++2. Whether an incoming snapshot whose date is older than the active snapshot is rejected.
++3. Whether a snapshot with no records is accepted.
++4. Whether the index build has a time bound for a 90,000-record, 150 MB snapshot, and whether lookups must stay within the lookup budget while an import runs.
++5. The record count and payload size the registry rejects a snapshot for.
++
++## References
++
++- High-level design: `docs/high-level-design.md`
++- Specifications: `docs/intent/registry/registry-specs.md`

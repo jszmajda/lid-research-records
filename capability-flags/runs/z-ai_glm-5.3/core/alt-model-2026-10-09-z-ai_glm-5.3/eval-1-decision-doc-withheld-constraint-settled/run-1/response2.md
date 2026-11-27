@@ -1,0 +1,3 @@
+Overkill, in this case. The skill's test is applied to the landed result, not the difficulty of deciding: the HLD tenet forbidding runtime network access already rules out the HTTPS directory and the managed search service, so a cold reader wouldn't re-litigate the choice — an inherited constraint settles it. The Decisions & Alternatives row I added to the LLD records the options, the tenet that eliminates them, and the accepted per-kiosk-rebuild cost, which is all a future reader needs. A decision doc is reserved for choices that stay genuinely live once landed, with credible options trading across criteria that no document already settles.
+
+So: nothing more to record. Still awaiting your triage of the ten probe gaps, then I'll move to Phase 3 (EARS).

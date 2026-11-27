@@ -1,0 +1,5 @@
+Agreed — and it's written. `docs/intent/previews/decisions/eviction-policy-2q.md` records the full record: a fixed-external-surface gate, the four weighted criteria (scan retention as the major one, leaning on the "cache miss is ordinary behavior" tenet), each option at its strongest honest representation, and a selection explaining why 2Q's structural protection wins over LRU's cost and frequency counting's hot-path/staleness costs. The LLD's Decisions & Alternatives row now links to it.
+
+Still open from the previous stop whenever you're ready:
+1. Triage the four genuine probe gaps (entry-count vs byte split, promotion into full A1, re-admission after eviction, stale renderer-version entries) — fold into the LLD or defer.
+2. Confirm you're happy with the new specs PREVIEW-006 through 009 and the 75/25 split staying an unspecced tuning parameter.

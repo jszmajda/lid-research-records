@@ -1,0 +1,15 @@
+Yes — and the doc clears the bar on its own merits, not just because the debate was long (length of argument is only a symptom; the test is whether a cold reader of the *landed* system would question it). Here a cold reader sees a cache with two queues, a promotion rule, and a tuned split where the obvious alternative is a single LRU ordering — they would very plausibly ask "why not LRU?" and want the reasoning. The choice also stays live: LRU remains credible if the cache grows, and the split parameter must be tuned against real workloads. So: full decision doc, not just a table row.
+
+**Written: `docs/intent/previews/decisions/cache-eviction-policy.md`** (owned by the previews node, no spec IDs)
+- **Context** — the two coexisting access patterns, the 12 GiB bound, why the eviction choice decides whether a comparison session survives a screening; the fixed HTTP contract and private-cache boundary as background.
+- **Decision Elements** — no gate eliminates any candidate, so the decision is driven by weighted criteria: reuse protection (major), workload adaptation and bookkeeping cost (moderate), cost of a wrong eviction, eviction predictability, admission-path cost (minor). The "cost of a wrong eviction" criterion was added deliberately as the one that cuts *against* the recommendation.
+- **Options in the Domain** — LRU, frequency-based with aging, and 2Q, each in its strongest honest form, with a verdict + factual basis per criterion.
+- **Selection** — 2Q, why it wins the major criterion, what it forecloses (no external pinning; protection is a consequence of a second request) and obliges (two queues, promotion on the second request, a defined eviction order that specs/tests/code must share), plus revisit triggers.
+
+**Also updated: `docs/intent/previews/previews-design.md`** — new `## Cache Replacement Policy` section (queue semantics, promotion, eviction order, the first-use share), a `## Decisions & Alternatives` table linking the doc, `## Open Questions & Future Decisions`, and the stale "the eviction policy is still open" paragraph removed.
+
+Two dependencies to close, and one still-open phase:
+
+1. **The doc names a tenet that isn't in the HLD yet** — *Repeatedly reused previews outrank one-off scans when the cache must evict* — as the source of the major criterion. Approve it and I'll add it to `docs/high-level-design.md` § Tenets; decline it and I'll re-ground the doc on the criteria alone.
+2. **The 25% first-use share is written in as the initial value** (3 GiB of the 12 GiB budget, reused queue holding 9 GiB) in both the LLD and the doc — my recommendation from before, now baked in. Confirm 25% or give me a number and I'll update both.
+3. **Phases 5–6 still have no target**: this repo has no code or tests. Design-only, a standalone preview-cache module with tests (needs a language), or the whole preview worker built from scratch?

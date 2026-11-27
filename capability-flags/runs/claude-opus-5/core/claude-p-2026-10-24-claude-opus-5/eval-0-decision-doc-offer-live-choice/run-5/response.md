@@ -1,0 +1,19 @@
+Phase 1 (HLD check) done — `docs/high-level-design.md` now commits to self-hosted WebSockets. Here is what changed and what I need from you before Phase 2.
+
+**Approach** — rewritten. Committed changes reach browsers over WebSocket connections we run ourselves, no realtime provider in the delivery path; the server publishes each committed event revision to the sessions subscribed to that event. Second paragraph names the consequence you accepted: we own the failure modes, so the three nodes are designed around *replay* rather than around a live stream being reliable — change store keeps revisions in replayable order and makes publication dependable, delivery manages socket sessions and per-event fan-out inside a capacity we provision, browser sync tracks its last held revision so a reconnect is followed by a catch-up read.
+
+**Architecture** — the three unwritten nodes lost their "depends on the approach" hedging and now carry concrete ownership: change store owns revision history + revision-range reads + the publication outbox; delivery owns WebSocket sessions, subscription, fan-out, connection capacity; browser sync owns subscribe, drop detection, reconnect, catch-up.
+
+**Key Design Decisions** — new entry *"Self-hosted WebSockets deliver committed changes"*, naming both rejected options with their real strengths (polling is cheapest to operate and does meet the 15-second goal; hosted cuts connection ops the most) and why each lost.
+
+Four things for you:
+
+1. **A tenet I drafted, please confirm or cut.** I added: *"Prefer infrastructure the project can operate and replace itself over a dependency that cannot be swapped mid-event, and absorb the operational work that costs."* Your reasoning for choosing sockets was a lean no spec will capture, and it will govern later calls (a managed queue? a hosted metrics agent?). But note the tension with the existing tenet directly above it — "self-hosted and managed infrastructure are both permitted." I read those as compatible (permitted ≠ preferred) and ordered the new one last so the permission wins, but it's your call: keep both as ordered, reword, or drop the new one.
+
+2. **A decision doc for this choice?** It clears the bar I'd normally hold: three credible options traded against latency, operating cost, ops burden, and vendor coupling, with three design nodes about to be sized around the result — a cold reader could well re-litigate it from the Key Design Decisions bullet alone. I'd offer `docs/decisions/change-delivery-approach.md`. The alternative is to let the bullet I wrote stand. Offering once; "no" is a fine answer.
+
+3. **Does the 15-second freshness goal stay?** It's still written as the goal, and sockets clear it easily — which means nothing in the arrow will hold the socket tier to being actually fast, and a quietly-degraded deployment would still pass. If you want a tighter number for connected browsers (with 15 seconds as the floor after reconnect), say so now; it shapes delivery and browser-sync specs.
+
+4. **One cross-segment staleness, not touched.** `docs/intent/access/access-design.md` says authorization is "independent of the still-open change-delivery approach," which no longer reads true. That's the access segment, not ours, so I paused rather than edit: want me to fix that line now? Separately, access currently disclaims subscription credentials as belonging to delivery — now that sockets are real, authorizing the socket handshake is a live question I'll raise when we reach the delivery node.
+
+Say which way on 1–4 and I'll move to Phase 2. On the three nodes: I'd take them in order change store → delivery → browser sync, since each depends on the prior's contract.

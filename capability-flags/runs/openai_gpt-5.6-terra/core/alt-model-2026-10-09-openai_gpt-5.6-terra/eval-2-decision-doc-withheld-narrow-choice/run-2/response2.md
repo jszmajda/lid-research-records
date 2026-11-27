@@ -1,0 +1,3 @@
+No. The 2Q policy is a contained previews decision: it does not reshape the review API, render queue, cache budget, or another design segment. A complete row in the previews LLD’s **Decisions & Alternatives** table will preserve the chosen policy, the rejected LRU and aged-frequency alternatives, and the scan-resistance rationale without creating a separate artifact to maintain.
+
+The length of the discussion alone does not make it a decision-doc candidate. Please approve the HLD revision when ready, and I’ll record the choice in the previews LLD.

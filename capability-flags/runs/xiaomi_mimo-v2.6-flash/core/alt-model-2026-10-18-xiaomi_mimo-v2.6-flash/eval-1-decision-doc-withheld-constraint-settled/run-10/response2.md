@@ -1,0 +1,3 @@
+Overkill — a row is the right tier. The decision-doc test is the landed state, not the deliberation: a cold reader who wonders "why not a central directory?" is settled in one line by the HLD's no-runtime-network tenet, which eliminates both network-backed options outright. That's the inherited-constraint case the heuristic says records a row and skips the doc, however long the debate ran. The row in `registry-design.md` already carries it.
+
+Still at the Phase 2 stop — send numbered feedback on the LLD (and the HLD line) plus the fix-now/defer triage for the six probe gaps, and approve explicitly before I move to Phase 3 EARS.

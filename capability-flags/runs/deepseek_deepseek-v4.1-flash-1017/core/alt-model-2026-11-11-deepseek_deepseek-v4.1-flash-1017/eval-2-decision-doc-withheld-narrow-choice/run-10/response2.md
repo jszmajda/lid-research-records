@@ -1,0 +1,5 @@
+Honestly, no — not by the skill's test. A decision doc earns its place when a cold reader would re-litigate the choice because credible options trade against multiple criteria *and* other design nodes are about to be sized around it. Here the choice is entirely inside the previews cache, the review API explicitly never inspects it, and the HLD abstracts the policy away. The Decisions row already says why 2Q beats LRU and aged frequency, so a cold reader can reconstruct it. The length of the debate isn't the criterion — a choice that was contested but reads as settled once landed is exactly the residue decision docs are meant to avoid.
+
+That said, it's your call: if you want the deliberation preserved as a standalone record anyway, I'll write one as an explicit exception and link it from the row — just know it adds an artifact to keep honest as the tuning lands.
+
+Do you want that doc regardless, or shall we keep the row and move to Phase 3 (EARS) on this LLD?

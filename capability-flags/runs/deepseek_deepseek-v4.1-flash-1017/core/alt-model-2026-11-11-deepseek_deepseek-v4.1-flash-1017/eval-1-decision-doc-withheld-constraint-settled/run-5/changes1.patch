@@ -1,0 +1,94 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..1b55ffa 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and a local embedded index that serves lookup on each kiosk.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..8a6c53e 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -9,16 +9,72 @@ prefix: REG
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
++Kiosks are isolated from the lab network. Each kiosk must validate a snapshot and prepare its own lookup index from the files on the USB medium.
++
+ ## Architecture
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++The lookup backend is a local embedded SQLite index owned by this node. The kiosk application bundles SQLite; no database service or system package is required at runtime. An index generation is a directory containing:
++
++| Path | Contents |
++|---|---|
++| `registry/active` | Pointer file naming the active generation |
++| `registry/snapshots/<generation>/snapshot.ndjson` | Validated source snapshot, retained for index rebuild |
++| `registry/snapshots/<generation>/index.db` | SQLite index for that snapshot |
++| `registry/snapshots/<generation>/generation.json` | Snapshot date, schema version, record count, and import completion marker |
++| `registry/staging/` | In-progress imports; never read by lookup |
++
++Lookup resolves `registry/active` for each request. A generation is visible only after its directory and pointer are complete, so lookups either see the prior active generation or the new one, never a partial import.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++1. Copy the snapshot from the USB medium into a fresh `registry/staging/<id>/` directory and verify its signature using the bundled public key.
++2. Reject the snapshot if its schema version is unsupported, if any record is missing a required field, or if two records share the same normalized serial key.
++3. Build `index.db` from the validated records and write `generation.json` with the completion marker last.
++4. Flush the staging directory to disk, rename it into `registry/snapshots/<generation>/`, then atomically replace `registry/active` with the new generation name.
++5. Delete generations older than the active and previous ones, and remove leftover staging directories.
++
++A failure before the pointer replacement leaves `registry/active` unchanged, removes the staging directory, and reports an error. An import with insufficient free disk space for the snapshot and index is rejected before staging begins.
++
++## Index Model
++
++| Table | Columns |
++|---|---|
++| `records` | `serial_key` (primary key), `serial`, `description`, `calibration_date`, `due_date` |
++| `snapshot_meta` | `snapshot_date`, `schema_version`, `record_count` |
++
++`serial_key` is the normalized serial number used for lookup; `serial` preserves the value as supplied in the snapshot. Dates are stored as supplied and are not reinterpreted by this node.
++
++Lookup normalizes the entered serial to the same key, performs a primary-key lookup, and reads `snapshot_date` from `snapshot_meta`. Both `Found` and `NotFound` carry the date of the active snapshot.
++
++## Activation and Recovery
++
++The node keeps the active generation and one previous generation. At startup it reads `registry/active` and verifies the generation's completion marker and index integrity. If the active index is unusable, the node rebuilds it from the retained `snapshot.ndjson`; if that fails and a previous generation exists, the node falls back to the previous generation. Incomplete generations and staging directories are removed at startup.
++
++Activation never mutates a generation that a lookup can already see. A lookup that overlaps activation completes against the generation that was active when the lookup began.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index built on each kiosk | On-site HTTPS directory; managed search service | The kiosk must resolve lookups from local files with no runtime network access. SQLite needs no service, has predictable lookup cost for 90,000 records, and keeps all backend work inside this node. The HTTPS directory and managed service both require runtime network connectivity and are excluded by the HLD tenet; the managed service also adds recurring cost and credentials. |
++| Index activation | Build a complete staging generation, then atomically replace the active pointer | Mutate the active index in place; activate per record | Pointer replacement keeps a failed or interrupted import from exposing partial records and leaves the last valid snapshot available. |
++| Duplicate detection | Reject duplicates on the normalized serial key | Reject duplicates only on the raw serial string | Two raw forms that normalize to the same lookup key would otherwise create an ambiguous lookup. |
++| Snapshot retention | Retain the active snapshot plus one previous generation | Delete the snapshot after indexing; retain only the active generation | The retained snapshot allows an index rebuild without re-importing from USB. One previous generation bounds disk use while preserving a fallback if the newest generation is unusable. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Lookup backend: local embedded SQLite index on each kiosk.
+ 
+-## Lookup Behavior
++### Deferred
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++1. Lookup behavior before the first successful snapshot import, when no active snapshot exists.
++2. Whether automatic index rebuild from the retained snapshot needs a progress indication for a technician waiting at the kiosk.
++3. Whether an index rebuild stages a new generation or repairs the active generation in place.
++4. Minimum free disk space to require before staging a snapshot, beyond fitting the snapshot and index.
++5. Whether the previous generation should be deleted on the next successful import or retained until manually cleared.
++6. Whether an unparseable snapshot date or missing snapshot metadata is a rejection condition.
++7. Whether a second snapshot import may begin while one is already running.

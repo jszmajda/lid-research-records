@@ -1,0 +1,6 @@
+Recorded the decision doc at `docs/intent/record-store/decisions/concurrent-visit-edits.md` and linked it from the `Decisions & Alternatives` table in `docs/intent/record-store/record-store-design.md`. It covers the tenet-derived criteria, both options, why field-aware three-way merge remains a live alternative if review volume outgrows two coordinators, and the downstream obligations `tablet-sync` and `review-export` must accommodate.
+
+We are still at the **Phase 2 stop** for `record-store-design.md`. Before moving to Phase 3 (`record-store-specs.md`), please let me know:
+
+1. Which of the 7 edge cases from the probe you want specified in `record-store-design.md` vs. deferred (idempotency key scope & payload canonicalization, `review_status` on retry, concurrent `base_revision_id: null` submissions, `plot_id` mutability & historical-visit rule, `select_existing` / `contributing_submission_ids` bounds, `reconciled_payload` revision metadata & resolution idempotency, and receipt ordering tie-breakers / unknown `visit_id` retrieval).
+2. Whether `record-store-design.md` is approved to proceed to Phase 3.

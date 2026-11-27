@@ -1,0 +1,3 @@
+I'd keep it as the Decisions row, not a full decision doc. The test isn't how long we argued—it's whether a cold reader would re-litigate the choice and whether other nodes get sized around it. This one affects only the preview cache: the interface, render queue, and 12 GiB budget are unchanged, and the LLD table already records 2Q against LRU and aged frequency with the criteria and rationale. A standalone doc would mostly duplicate that, and LID treats a directory of decision docs as a smell. The remaining live item—the 25/75 split—is deployment tuning, already in Open Questions.
+
+If you still want the meeting history preserved in a standalone doc, say so and I'll write it. Otherwise, approve the LLD and I'll move to Phase 3.

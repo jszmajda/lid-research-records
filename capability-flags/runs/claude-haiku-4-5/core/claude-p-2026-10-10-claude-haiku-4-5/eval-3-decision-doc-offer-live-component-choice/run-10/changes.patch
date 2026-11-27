@@ -1,0 +1,192 @@
+diff --git a/docs/intent/record-store/decisions/concurrency-policy.md b/docs/intent/record-store/decisions/concurrency-policy.md
+new file mode 100644
+index 0000000..7f905b9
+--- /dev/null
++++ b/docs/intent/record-store/decisions/concurrency-policy.md
+@@ -0,0 +1,88 @@
++---
++node: record-store
++---
++
++# Decision: Concurrent Visit Edit Handling — Whole-Visit Revisions
++
++## Context
++
++When two field workers independently edit the same visit from the same observed state, the server must decide how to present that concurrency to the review team. The choice affects not only the record store's public contract but also the design of tablet-sync (which manages local bases and signals conflicts) and review-export (which decides which visits are ready to export and surfaces resolution work).
++
++Two approaches are viable: **whole-visit revisions**, where concurrent edits create competing complete submissions that a coordinator must explicitly reconcile, and **field-aware three-way merge**, where the system automatically combines non-overlapping field edits and only surfaces overlaps for review. The choice trades review workload and submission complexity against implementation complexity and the risk of combining edits the system cannot understand as related.
++
++## Decision Elements
++
++### Gates
++
++**Preserve all submitted observations.** No approach may silently discard an edit. Both options preserve original submissions; this gate passes for both.
++
++**Do not combine unrelated edits without human understanding.** Species identification and cover estimates are semantifically related within a taxonomic context that the system does not encode. Observer name corrections and species cover are unrelated. The system cannot infer all such relationships from schema alone. A gate fails if the option can combine unrelated edits and present the result as safely usable without review.
++
++### Weighted Criteria
++
++**Preservation of whole-visit intent** (major) — A worker's field observation is a single coherent act: they measured a plot, identified species, estimated cover, and recorded uncertainties. This observation ideally travels through the system as a unit where a reviewer can understand the worker's reasoning. A strong fit means the mechanism preserves and surfaces this unity; a weak fit means the mechanism fragments the observation into field-level decisions.
++
++**Implementation complexity** (major) — The record store is a foundational component. Merge logic that correctly handles observer lists, species entries, and scalar fields must be maintained and tested. A strong fit means simple, stateless logic; a weak fit means complex rules or state transitions.
++
++**Sensitivity to scientific relationships** (major, relates to tenet: "Do not silently discard a submitted edit") — Unrelated edits must never be combined without review. A species identification change and its corresponding cover estimate are related; an observer name correction and a species entry are not. The system's field schema does not encode these relationships. A strong fit means the mechanism avoids combining unrelated edits. A weak fit means the mechanism risks it and must rely on (fragile) heuristics or post-hoc rules to catch problems.
++
++**Review workload** (moderate) — Two coordinators reconcile field observations part-time. Automatic reconciliation of non-overlapping edits reduces the review queue, freeing capacity for other work. A strong fit means high automatic reconciliation; a weak fit means all concurrent edits require review.
++
++**Submission complexity** (moderate) — Tablets must manage local state and know how to signal conflicts to the server. Simpler submission envelopes reduce code on the tablet and network overhead. A strong fit means small, stateless submissions; a weak fit means tablets must carry snapshots or intermediate state.
++
++## Options in the Domain
++
++### Whole-Visit Revisions
++
++Each submission carries the complete visit payload and a base revision ID naming the state from which the edit was made. If multiple submissions arrive with the same base revision ID and visit ID, they create competing revisions. A coordinator explicitly selects one, manually merges them, or requests clarification.
++
++**Analysis**:
++
++- **Preserve all submitted observations** — Passes. Every submission is stored. Coordinators choose resolution; nothing is silently dropped.
++- **Do not combine unrelated edits without human understanding** — Strong fit. Unrelated edits never combine automatically. A coordinator sees both complete observations side-by-side and can judge whether a merge is scientifically valid.
++- **Preservation of whole-visit intent** — Strong fit. Each submitted observation is represented as a complete unit. Coordinators review the worker's full reasoning, not individual field edits. The revision history preserves when and why edits differed.
++- **Implementation complexity** — Strong fit. No merge rules required. The server detects concurrency (multiple submissions from the same base) and stores revisions separately. Resolution is a choice operation: accept, merge (manual, coordinator-authored), or clarify.
++- **Sensitivity to scientific relationships** — Strong fit. The system makes no assumptions about field relationships. A coordinator has full context: both complete observations, their authors, and the order they arrived.
++- **Review workload** — Weak fit. Every concurrent edit requires review, even if the edits affect disjoint fields. A correction to an observer name and an addition of a missing species create two revisions; both must be resolved.
++- **Submission complexity** — Strong fit. Tablets submit `visit_id`, `base_revision_id`, `idempotency_key`, and `fields`. Conflict signaling is implicit: if a retry with the same base returns a conflict marker, competing revisions exist. Tablets track only the current base revision ID, not snapshots.
++
++**Summary**: Preserves whole-visit intent as a unit, avoids combining unrelated edits, at the cost of higher review workload.
++
++### Field-Aware Three-Way Merge
++
++Each submission carries the base state, changes (a structured diff), and the resulting state. The server applies field-level conflict resolution: disjoint field changes combine automatically; overlapping changes require review. A maintained set of merge rules defines which fields are independent (e.g., observer corrections do not conflict with species additions) and which are related (e.g., species ID and cover are a unit and conflict if both changed).
++
++**Analysis**:
++
++- **Preserve all submitted observations** — Passes. Each submission is stored. Merged outcomes are also stored. The system retains the original observations.
++- **Do not combine unrelated edits without human understanding** — Partial fit. The merge rules encode knowledge of field relationships. Correctly maintained rules can avoid combining observer-name corrections with species edits. However, the rules must be maintained as the schema evolves, and rules can become stale or incomplete. A rule that treats two fields as independent when they are actually related (in context the system does not model) will silently combine them. The risk is latent; the system cannot detect it.
++- **Preservation of whole-visit intent** — Weak fit. A worker's observation is fragmented into per-field edits and merge decisions. A coordinator reviewing an automatically merged visit sees the fields but not the original observations or the worker's reasoning. Reconstructing the original submissions from the merged outcome requires querying the history.
++- **Implementation complexity** — Weak fit. Merge rules must handle observer lists (sets), species entries (sets), scalar fields (timestamps, cover estimates), and notes (text). Rules for scalar fields are straightforward (last-write wins, or reject overlap). Rules for sets are complex (do two independent species additions or removals truly commute? can cover estimates be independently edited if a species was added?). Rules must be tested against schema evolution and must handle cascading dependencies.
++- **Sensitivity to scientific relationships** — Weak fit. The merge rules encode assumptions about which fields are related. A rule that treats observer corrections and species edits as independent is correct in isolation but misses the fact that a species identification and its cover estimate are a single scientific act. The system enforces the rule, not the science.
++- **Review workload** — Strong fit. Non-overlapping edits combine automatically, reducing the review queue. Only field-level overlaps require review.
++- **Submission complexity** — Weak fit. Tablets must carry base snapshots or structured diffs to enable three-way merge on the server. Larger submission payloads, and tablets must manage and sync snapshot state.
++
++**Summary**: Reduces review workload through automatic reconciliation, at the cost of fragmented observation representation and risk that merge rules will combine unrelated edits the system cannot understand as related.
++
++## Selection
++
++**Choose whole-visit revisions.**
++
++The decision turns on two major criteria: **Sensitivity to scientific relationships** and **Preservation of whole-visit intent**. Both favor whole-visit revisions.
++
++Field-aware merge's strength is **Review workload** (moderate criterion). That strength is real: automatically combining non-overlapping edits does free coordinator time. However, the weakness in sensitivity to scientific relationships is fundamental. Merge rules are maintained within the record store, but the knowledge they encode lives in the team's field practices and the botanists' understanding of which edits cohere. The system cannot learn this knowledge from the schema. Rules that lag the team's practices or miss undocumented relationships will silently combine edits that should not be combined, violating the tenet **"Do not silently discard a submitted edit"** — here, by erasing the boundaries between submitted observations.
++
++The team already operates with two coordinators who review field observations. They are the system's locus for scientific judgment. Concentrating that judgment at review time — where the coordinators see both complete observations, their authors, and their context — is the right place for it. The trade of accepting higher review workload in exchange for deferring scientific judgment to the humans who understand the domain is the correct one.
++
++Whole-visit revisions preserves the worker's observation as a unit, which aligns with how field work happens and how scientific review works. Coordinators see the edit in context: what observation did the worker originally record, and what was the edit? They can judge whether a concurrent edit by another worker was a true correction, an independent observation, or a misunderstanding. That judgment cannot be automated.
++
++### Implications
++
++**Downstream obligations**:
++
++- **Tablet-sync** must signal to field workers when a submitted edit has competing revisions awaiting review. Tablets retain the base revision ID for each local draft so workers know whether their next submission will create a new revision or build on a prior edit. On sync, tablets learn whether a submitted draft became a resolved revision or remains unresolved.
++- **Review-export** must surface revision conflicts explicitly. The coordinator interface must show competing revisions side-by-side and require explicit resolution before a visit can be exported. Unresolved visits are held out of the Friday CSV.
++
++**What this forecloses**: Automatic three-way merge is foreclosed. If the team later needs higher automatic reconciliation (due to volume increases or process changes), the server's fundamental architecture would need to change, and merge rules would have to be authored and maintained.
++
++**What this enables**: Simpler submission contracts, clearer audit trails of who edited what, and the ability to preserve submitted observations without fragmentation. Coordinators have full observational context when resolving conflicts.
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..6d086fd 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -25,17 +25,48 @@ Authenticate the submitting worker and validate field types and plot references
+ 
+ Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
+ 
+-## Open Design Choice: Concurrent Visit Edits
++## Concurrency Policy: Whole-Visit Revisions
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++This node adopts whole-visit revisions. Each submission declares a base revision ID (null for the first creation). When multiple edits derive from the same base revision and affect the same visit, they create competing revisions. A coordinator must explicitly select one, merge them, or request clarification; no automatic combination occurs.
+ 
+-Two approaches remain credible:
++**Rationale**: Preserves the worker's submitted visit as a unit and avoids combining edits across scientific relationships the system cannot understand. The review burden falls on the human coordinators (who already reconcile field notes), not on auto-merge rules.
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++**Downstream impact**: Tablet-sync retains base revision IDs with local drafts and signals pending competing revisions to the field worker. Review-export surfaces revision conflicts, requires coordinator resolution before export, and excludes unresolved visits from the CSV.
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++## Submission and Resolution Workflow
+ 
+-## Downstream Contract Work
++**Submission envelope:**
++- `visit_id` (UUID, client-generated)
++- `base_revision_id` (revision ID or null for creation)
++- `author_id` (authenticated worker)
++- `idempotency_key` (UUID, set by client)
++- `submitted_at` (server-assigned receipt time)
++- `fields` (visit payload: plot_id, observation_date, observer_names, species_cover, notes)
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++**Current-state response** includes:
++- `visit_id` and the latest (or coordinator-selected) revision ID
++- The merged/selected visit state
++- A presence field: `has_unresolved_revisions` (boolean) — true if competing revisions exist that no coordinator has resolved
++
++**Unresolved-work representation**: A visit with unresolved revisions stores the coordinator-facing metadata:
++- All competing revision IDs and their submission metadata (author, receipt time, base_revision_id)
++- The payload of each competing revision side-by-side for comparison
++- No resolution yet assigned
++
++**Resolution operation**: A coordinator posts a resolution identifying:
++- `visit_id`
++- `resolution_type`: one of `accept_revision`, `merge_revisions`, `request_clarification`
++- For `accept_revision`: the chosen `revision_id`
++- For `merge_revisions`: the merged `fields` payload (the coordinator manually combines the edits)
++- For `request_clarification`: a `note_to_requester` sent back to the field worker
++- The resolving coordinator's `id` and `resolved_at` (server-assigned)
++
++Original submissions are never deleted; resolutions and selected revisions are appended to the visit's history.
++
++## Decisions & Alternatives
++
++| Decision | Selection | Rationale | Alternatives Considered |
++|----------|-----------|-----------|------------------------|
++| Concurrent visit edit handling | Whole-visit revisions | See [decisions/concurrency-policy.md](decisions/concurrency-policy.md). Preserves whole-visit intent as a unit and avoids automatic combination of unrelated edits. | Field-aware three-way merge (higher automatic reconciliation, larger export capacity, but fragments observations and risks combining edits across scientific boundaries the system does not understand) |
++| Base revision tracking | Client submits base_revision_id | Allows the server to detect true concurrency and preserve unmerged branches. | Server infers concurrency from timing (less precise; cannot distinguish intentional edits from offline delays) |
++| Latest-state retrieval | Return has_unresolved_revisions flag | Allows tablets and export logic to show reviewability status without expensive computation. | Compute unresolved status on demand (higher latency; blocks export decision) |
+diff --git a/docs/intent/record-store/record-store-specs.md b/docs/intent/record-store/record-store-specs.md
+index ece5d8c..9d67249 100644
+--- a/docs/intent/record-store/record-store-specs.md
++++ b/docs/intent/record-store/record-store-specs.md
+@@ -1,8 +1,26 @@
+ **LLD**: docs/intent/record-store/record-store-design.md
+ 
+-- [ ] **REC-001**: When an authenticated worker submits a valid visit edit, the system SHALL retain the submitted payload with its visit ID, author ID, and server receipt time.
+-- [ ] **REC-002**: When a submission repeats an accepted idempotency key with an identical payload, the system SHALL return the original acceptance result without creating another stored submission.
+-- [ ] **REC-003**: When a submission repeats an accepted idempotency key with a different payload, the system SHALL reject the submission and leave the original submission unchanged.
+-- [ ] **REC-004**: When edits derived from the same starting visit state are accepted, the system SHALL preserve both original submissions regardless of the concurrency policy's outcome.
+-- [ ] **REC-005**: When a caller retrieves a visit, the system SHALL indicate whether unresolved review work exists for that visit.
+-- [ ] **REC-006**: When a coordinator resolves review work, the system SHALL retain the coordinator's identity and the contributing submission IDs with the resolution outcome.
++## Submission and Idempotency
++
++- [ ] **REC-001**: When an authenticated worker submits a valid visit edit, the system SHALL retain the submitted payload with its visit ID, author ID, base revision ID, idempotency key, and server receipt time.
++- [ ] **REC-002**: When a submission repeats an accepted idempotency key with an identical payload and base_revision_id, the system SHALL return the original acceptance result with the existing revision ID without creating another stored submission.
++- [ ] **REC-003**: When a submission repeats an accepted idempotency key with a different payload, the system SHALL reject the submission with a conflict error and leave the original submission unchanged.
++- [ ] **REC-004**: When a submission's base_revision_id does not exist or refers to a different visit, the system SHALL reject the submission.
++
++## Revision and Conflict Detection
++
++- [ ] **REC-005**: When multiple submissions with the same visit ID arrive with the same base_revision_id, the system SHALL create multiple competing revisions with distinct revision IDs.
++- [ ] **REC-006**: When a visit has unresolved competing revisions, the system SHALL mark that visit as having unresolved review work.
++- [ ] **REC-007**: When a retrieval request includes a visit with unresolved competing revisions, the system SHALL return the has_unresolved_revisions flag as true and the metadata for all competing revisions (author, submission time, base_revision_id, submitted field payload).
++- [ ] **REC-008**: When a retrieval request includes a visit with a single accepted or merged revision, the system SHALL return that revision's state as the current visit and the has_unresolved_revisions flag as false.
++
++## Resolution Operations
++
++- [ ] **REC-009**: When a coordinator accepts a revision, the system SHALL mark that revision as the current state, record the coordinator's identity and resolution time, and clear the unresolved flag for that visit.
++- [ ] **REC-010**: When a coordinator merges revisions, the system SHALL store the merged fields as a new revision, record the merged revision as deriving from the multiple competing base revisions, record the coordinator's identity and resolution time, and clear the unresolved flag for that visit.
++- [ ] **REC-011**: When a coordinator requests clarification, the system SHALL store a clarification request note, keep the visit in unresolved status, and return the note to the field worker on their next sync.
++- [ ] **REC-012**: The system SHALL never delete an original submission or revision, even after a coordinator accepts, merges, or requests clarification. All history SHALL remain retrievable for audit.
++
++## Preservation of Submitted Edits
++
++- [ ] **REC-013**: When edits derived from the same starting visit state are accepted, the system SHALL preserve both original submissions as distinct revisions.

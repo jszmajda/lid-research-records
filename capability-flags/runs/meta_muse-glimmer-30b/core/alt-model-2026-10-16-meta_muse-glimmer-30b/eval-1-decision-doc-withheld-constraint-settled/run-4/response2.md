@@ -1,0 +1,5 @@
+The lookup-backend choice is recorded in the LLD Decisions & Alternatives table with the three options you considered and the rationale tied to the HLD no-network tenet.
+
+A full decision doc is warranted only when a cold reader would still want to re-litigate the trade-offs after seeing the landed design. Here the decision is load-bearing but bounded: it’s a single component choice, the alternatives are named and rejected with a clear tenet-based reason, and the certificate interface is unchanged by the choice.
+
+That fits the table-row treatment. A decision doc would be overkill unless you want a standalone artifact for audit/ onboarding that walks through cost, operational, and future-search considerations in more depth. Do you want me to create docs/intent/registry/decisions/lookup-backend-decision.md anyway, or keep the table row?

@@ -1,0 +1,55 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..5186336 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with its own replacement policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..46a59d3 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -21,6 +21,35 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB across both replacement queues below. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement
++
++Sheets are admitted through a 2Q scheme so a long sequential screening cannot flush the small working set an editor is actively comparing.
++
++- A **probationary** queue holds each sheet on its first use since admission, evicted in FIFO order.
++- A **protected** queue holds sheets that were requested again shortly after leaving probation, evicted in least-recently-used order.
++- A **recently-evicted key list** records the cache keys of sheets just evicted from probation. It stores keys only — never JPEG bytes — so it does not count against the 12 GiB budget. A cache miss whose key is on this list is treated as a reuse: the re-rendered sheet is admitted straight to the protected queue instead of to probation, and the key is removed from the list.
++
++A cache hit on a protected sheet refreshes its recency within the protected queue. A hit on a probationary sheet does not change its position; a first-use sheet rides out its FIFO slot regardless of how often it is touched while there. This is what denies a one-off screening scan any foothold in the protected queue.
++
++The probationary queue is bounded by a **probation share** of the 12 GiB budget. When admitting a sheet would push total cached JPEG data over 12 GiB, the worker evicts while over budget: it evicts the oldest probationary sheet first — recording that sheet's key in the recently-evicted list — and evicts the least-recently-used protected sheet only when probation is empty. When probation itself exceeds its share, its oldest sheet is evicted into the recently-evicted list even if total usage is under 12 GiB, so protected sheets keep their room.
++
++All of this is internal to the worker: no other node reads the queues, the recently-evicted list, or the probation-share setting, and none depends on a given sheet staying cached.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q — probationary FIFO + protected LRU, with a key-only recently-evicted list | LRU; frequency-based eviction with aging | The working set an editor compares must survive the long sequential screenings that run alongside it. LRU is the cheapest to keep but a single long scan evicts the whole working set. Aged frequency counts retain repeatedly popular clips but add per-entry counter maintenance and lag a project switch, keeping yesterday's favorites too long. 2Q shields reused sheets from one-off scans at the cost of two queues and one share parameter to tune, and all of its bookkeeping stays private to the worker. |
++| Recently-evicted list holds keys only | Keys only, excluded from the 12 GiB budget | Retaining evicted JPEG bytes as a victim cache | Reuse detection needs only the key. Keeping bytes would spend the JPEG budget on sheets already evicted and blur the 12 GiB accounting. |
++| Queues sized by bytes | Probation bounded by a share of the 12 GiB budget | Bounding each queue by entry count | Sheets vary around 2 MiB and the hard limit is a byte budget, so a byte share keeps the two bounds in the same unit and avoids a count that drifts from actual footprint. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Cache replacement policy is 2Q (see Decisions & Alternatives).
++
++### Deferred
++1. The probation-share value, and whether it is fixed for the pilot or runtime-configurable. The pilot ships a fixed value tuned against observed screening-vs-comparison mixes.
++2. The capacity of the recently-evicted key list — how many evicted probationary keys to remember before the oldest is dropped.

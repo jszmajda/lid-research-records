@@ -1,0 +1,3 @@
+**Decision doc is not needed here.** The HLD's tenet already constrains it: "All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted." Given that constraint, SQLite for an offline embedded index is the obvious, defensible choice — a cold reader wouldn't re-litigate it. The table row with rationale is sufficient and keeps the design docs lean.
+
+Now, back to the three Phase 4 findings I surfaced above — can you resolve those before we move to tests?

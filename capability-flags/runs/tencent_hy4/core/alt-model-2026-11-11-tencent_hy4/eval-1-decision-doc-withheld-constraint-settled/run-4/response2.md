@@ -1,0 +1,12 @@
+No — a decision doc would be overkill; the `Decisions & Alternatives` row is the right ceiling. The test applies **from the landed state, not the deliberation**, so "went back and forth" and "looked close at first" are symptoms, not the test — a row can come out of a long argument.
+
+Two independent reasons it doesn't clear the bar:
+
+- **An inherited constraint eliminates the other options.** HLD Tenets: "All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted." The HTTPS directory ("lookups depend on the lab network") and the managed service ("external connectivity become registry concerns") both need runtime connectivity, so neither was ever a viable alternative. A cold reader sees the SQLite index as the *only* shape that could work — native, not non-obvious. That's precisely the "inherited constraint eliminated the rest" → row case, not the doc case.
+- **It affects only its own node.** You specified the certificate interface stays unchanged for all three options; no sibling node is sized around the result. The skill says not to offer a doc for a choice "that affects only its own node, however long the debate ran."
+
+A full doc is reserved for a choice that stays *live* — credible options traded against multiple weighted criteria, with downstream nodes leaning on the result, so a cold reader would re-litigate it without the tradeoffs laid out. This is gate-dominated (offline is a pass/fail gate, not a scored criterion) and node-local, so it isn't that. I also deliberately didn't dangle the offer at selection: people offered a doc tend to say yes whether or not they need it, and one landed here would be residue the *docs carry current intent* tenet strips — the row already carries everything a cold reader needs.
+
+If you want one regardless, I'll write it, but I'd flag it as recording a settled-obvious choice and would warn about that residue first. There are currently no decision docs in the repo.
+
+I'm still holding at the Phase 2 stop. Before I move to Phase 3 (EARS), I need: **(1)** approve the revised LLD or give numbered feedback; **(2)** triage gaps 1–9 — fix in the LLD now vs. defer to `Open Questions & Future Decisions`. How would you like to proceed?

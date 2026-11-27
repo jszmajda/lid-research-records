@@ -1,0 +1,9 @@
+Overkill, in my read — and the fact that you went back and forth is the thing the test deliberately ignores.
+
+The decision-doc bar is about the *landed* state: would a cold reader of the result find the choice non-obvious — question it, or be tempted to reverse it? Here they open the HLD, see "no runtime network access is permitted" and "kiosks have no network route," then see an on-kiosk SQLite index, and there's nothing left to wonder about. The two options that felt like live competitors are the ones that tenet eliminates. A doc laying out the HTTPS directory and the managed service against cost, maintenance, and connectivity criteria would be preserving a deliberation that the constraint had already settled — and a reader would mostly come away confused about why it needed arguing.
+
+The same reasoning rules out a Decisions row: it would restate the tenet one node lower.
+
+Two cases would change my answer. If the no-network tenets are genuinely up for revision — if the deliberation was real because you'd trade them away under enough cost pressure — then the live choice isn't the backend, it's the tenet, and that belongs in a project-level decision doc at `docs/decisions/`, written as "should kiosks be allowed a lab-network dependency?" Or if something in the comparison isn't captured by the no-network tenet and would still bite a cold reader — a per-kiosk index-rebuild cost you weighed, say — tell me what it was and I'll record that part.
+
+Otherwise I'd record nothing beyond the HLD line, and you can say so by answering the two open questions from the last stop: do the no-network tenets stand, and does the import/index-build budget belong in the HLD's goals or in the registry LLD?

@@ -1,0 +1,9 @@
+I'd push back — and specifically on the "after all that arguing" part: how long the debate ran isn't the test. The test is the landed design, read cold.
+
+Once 2Q ships, it's a private detail of one node. By your own framing only the preview worker's replacement tracking changes — the preview API and render queue are untouched, everything stays inside the preview cache — and the HLD already fixes the interface "for every eviction policy" and bars every other node from reading eviction metadata. No other design node is sized around this result, and nothing downstream leans on why 2Q won. A choice that affects only its own node doesn't earn a standalone doc however long the argument ran. A decision doc here would mostly preserve the three meetings and the 180-message thread — exactly the deliberation residue that *docs carry current intent* strips. Written cold, it would have almost nothing to say that the choice itself doesn't already show.
+
+What it does earn is a row in the Previews LLD's Decisions & Alternatives table: **Chosen** 2Q; **Alternatives** LRU and frequency-with-aging; **Rationale** — protects comparison sheets from being flushed by long sequential screenings, paid for with the queue-size split to tune. That one line settles a cold reader's "why 2Q?". I'd also rewrite the current "policy is still open / candidates are…" paragraph fresh, in present tense with no chronology, and fold it into the Phase 2 LLD draft for your review.
+
+I'm not reopening the 2Q call — that's settled. But the recording call is yours, not mine: if you want the full doc anyway, I'll write it and link it from that row, with the warning that it'll be a doc a cold reader doesn't need, and we'd be trading the "decision docs are rare" bar for a memorial of how hard the choice felt.
+
+So: record just the Decisions row and continue to the Phase 2 LLD draft for your stop, or add a full decision doc as well?

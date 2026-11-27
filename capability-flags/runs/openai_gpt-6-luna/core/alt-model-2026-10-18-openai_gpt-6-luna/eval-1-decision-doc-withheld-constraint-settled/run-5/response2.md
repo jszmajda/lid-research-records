@@ -1,0 +1,1 @@
+A separate decision doc would be overkill. The HLD already rules out network-dependent options: kiosks have no runtime network route, and USB snapshots are the only update channel. The registry LLD’s decision row captures why SQLite fits those constraints and why the certificate interface stays unchanged. A cold reader can follow the choice without a longer record.

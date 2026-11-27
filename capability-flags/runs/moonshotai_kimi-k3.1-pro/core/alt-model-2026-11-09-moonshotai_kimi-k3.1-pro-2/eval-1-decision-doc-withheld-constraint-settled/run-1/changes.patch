@@ -1,0 +1,93 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..5f84331 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns signed-snapshot validation, preparation of a private embedded SQLite index, and lookup.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..992d849 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,69 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. The registry accepts snapshots from approved USB media and serves lookups entirely from kiosk-local storage.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface; it has no access to SQLite connections, schema, queries, or storage paths.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Each valid snapshot is imported into a new embedded SQLite database owned by the registry. The active database is read-only for lookups. Snapshot validation, index construction, activation, cleanup, and lookup all belong to this node.
+ 
+-## Snapshot Import
++## SQLite Index
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Build the index from validated snapshot records rather than accepting a SQLite file from removable media. The database contains:
++
++- `records`, with one row per equipment record and columns for the normalized serial number, original serial number, equipment description, calibration date, and due date.
++- A unique index on the normalized serial number, which also supports exact-match lookup without scanning the table.
++- `metadata`, with exactly one row containing the snapshot date and schema version.
++
++Use SQLite's ordinary B-tree indexing and parameterized exact-match queries. No full-text search, query language, or external database service is exposed. A lookup reads the snapshot date from the same activated database as the record, so every result describes one coherent snapshot.
++
++Keep the database, temporary import files, and activation state in registry-owned local storage. Registry callers cannot supply SQL or filesystem paths.
++
++## Snapshot Import and Activation
++
++Import uses a staging database created in the same local filesystem as the active database:
++
++1. Verify the signature using the bundled public key and reject an unsupported schema version before constructing the replacement index.
++2. Validate records and serial-number uniqueness while streaming the newline-delimited JSON input, avoiding an in-memory copy of the full snapshot.
++3. Insert records and metadata into the staging database, create its index, and run an integrity check.
++4. Close the completed staging database and atomically rename it over the active database. Activation serializes with lookups so no lookup observes import staging or a mixture of old and new records.
++5. Report activation success only after the replacement is complete. Remove abandoned staging files during a later import or startup cleanup without touching the active database.
++
++Any validation, indexing, integrity-check, or activation failure removes the staging database where possible and leaves the previous active database available. Import errors identify the failed stage without exposing a partially imported snapshot.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Query the unique normalized serial key and return the matching record fields with the active snapshot date, or `NotFound` with that date. Open SQLite for read-only access and do not mutate index contents during lookup.
++
++A single exact-index lookup serves the 250 ms target for approximately 90,000 records. Performance tuning remains local to this node unless measurements show that the target is not met.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Private embedded SQLite index | On-site HTTPS directory; managed search service | Exact-match B-tree lookup is predictable at the registry's scale, satisfies the prohibition on runtime network access, and adds no service, credentials, recurring cost, or network-timeout behavior. Snapshot preparation remains encapsulated in the registry, and certificates retain the same result interface. |
++| Index source | Construct SQLite locally from validated snapshot records | Import a prepared SQLite database from USB | Local construction keeps signature and record validation in the registry and avoids treating a removable-media database file as trusted input. |
++| Lookup query | Parameterized exact match on a unique normalized-serial index | Full table scan; full-text or fuzzy search | Exact serial matching preserves punctuation and directly supports the lookup latency goal without adding search features technicians do not need. |
++| Snapshot activation | Build and verify a staging database, then atomically rename it on the same filesystem | Update the active database record by record; switch individual tables within one shared database | A complete closed database is the activation unit, keeping imports isolated and making each lookup observe one snapshot. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. The lookup backend is a registry-private embedded SQLite index; certificate behavior and its registry interface do not change.
++2. Snapshot import constructs a fresh local index and activates it only as a complete replacement.
++
++### Deferred
++
++1. Whether duplicate detection compares source serial numbers or normalized serial numbers when case or surrounding whitespace is their only difference.
++2. The lookup result and startup behavior when no snapshot has ever been activated, since `NotFound(snapshotDate)` requires a date.
++3. Recovery behavior if the previously active SQLite file is missing or fails its integrity check at startup.
++4. Validation rules for missing, malformed, or incorrectly typed non-serial record fields.
++5. The kiosk operating system's atomic-replacement semantics while a read connection is open, and whether activation must drain readers or use indirection instead.
++
++## References
++
++- `docs/high-level-design.md`
++- `docs/intent/certificates/certificates-design.md`

@@ -1,0 +1,7 @@
+Overkill, in my view — the row is the right call, and here's the crux of why.
+
+The decision-doc test is applied from the **landed** state, not the deliberation: would a cold reader re-litigate this? In the design as it now stands, your "no runtime network access" tenet rules out both the HTTPS-directory and managed-service options outright. So a cold reader arrives already holding the constraint that settles it, and the row — which names both alternatives and says the tenet trims them — gives them everything they'd want. The guidance specifically carves out "a choice an inherited constraint settles" from decision docs, and that's this.
+
+That it felt close while you were deciding doesn't change the verdict — "contested in the moment" and "live for a cold reader" are different things. The thing that made it feel close (the managed service's room for richer search later) loses on the same tenet, so it doesn't survive into the landed rationale as a live tension.
+
+One condition would flip me: if you think the **no-network tenet itself** is likely to be revisited — say kiosks might get a lab-network route someday — then the backend choice reopens and the alternatives become live again. At that point a decision doc laying out the three options against maintenance/cost/future-search criteria would earn its place, because a future reader weighing that change would genuinely re-run the comparison. If that's on the horizon, say so and I'll write it; otherwise I'd keep the row and move on.

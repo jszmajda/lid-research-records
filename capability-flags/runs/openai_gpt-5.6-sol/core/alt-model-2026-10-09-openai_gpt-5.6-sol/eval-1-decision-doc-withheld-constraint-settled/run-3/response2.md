@@ -1,0 +1,3 @@
+A standalone decision doc would be overkill. In the landed design, the HLD’s offline-operation and USB-only update constraints make the network-backed alternatives poor fits, so a cold reader is unlikely to need a full re-evaluation.
+
+I’ll capture the choice in the registry LLD’s **Decisions & Alternatives** table, including the on-site HTTPS directory and managed search service with a concise rationale. Please approve the HLD update so I can proceed with that LLD draft.

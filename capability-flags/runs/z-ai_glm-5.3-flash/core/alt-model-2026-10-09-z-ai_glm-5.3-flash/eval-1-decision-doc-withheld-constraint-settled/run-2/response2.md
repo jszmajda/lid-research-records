@@ -1,0 +1,5 @@
+A decision doc is warranted here, not overkill. The test is whether a cold reader would re-litigate the choice — and this one would: three credible options traded on different criteria (rebuild cost vs. network dependency vs. recurring cost/credentials), the outcome was close enough that you went back and forth, and the registry's import pipeline and performance approach are sized around the result. That's exactly the "stays genuinely live" case the doc exists for. A Decisions row would settle *what* was chosen but lose the criteria and trade-offs a future reader needs if, say, a networked kiosk variant ever shows up.
+
+The counter-case — that it's overkill — applies when one option dominates or the choice is contained to its own node. Neither holds: the options were close, and certificates and the HLD tenets lean on the offline consequence of this choice.
+
+Say the word and I'll draft it in `docs/intent/registry/decisions/` and link it from the Decisions row.

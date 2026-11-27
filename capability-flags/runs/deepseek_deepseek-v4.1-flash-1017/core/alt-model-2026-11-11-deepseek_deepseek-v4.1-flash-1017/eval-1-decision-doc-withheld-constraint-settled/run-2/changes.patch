@@ -1,0 +1,98 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..84c692d 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, local index preparation, activation, and lookup through a kiosk-local embedded SQLite index.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..8c80e23 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,76 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. Kiosks operate without a network route, so every lookup must resolve from files stored locally.
+ 
+ ## Architecture
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, activation, and lookup all belong to this node. Lookup uses an embedded SQLite index stored on the kiosk; there is no service to start and no network call on the lookup path. A snapshot import rebuilds the index locally on each kiosk before that snapshot becomes active.
++
++### Index Layout
++
++The registry owns a private directory on local storage:
++
++```
++registry/
++  active                      # pointer file: name of the active snapshot directory
++  snapshots/
++    <snapshot-id>/
++      index.sqlite            # immutable SQLite database for one snapshot
++```
++
++`<snapshot-id>` is a content digest computed while the snapshot signature is verified, so the same snapshot imported twice maps to the same directory. The `active` file contains one snapshot directory name followed by a newline. The registry treats the SQLite file as an implementation detail; no other component reads it.
++
++Each `index.sqlite` contains:
++
++- `records(serial_key TEXT PRIMARY KEY, serial TEXT NOT NULL, description TEXT NOT NULL, calibration_date TEXT NOT NULL, due_date TEXT NOT NULL)`.
++- `metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL)`, holding at least `snapshot_date`, `snapshot_id`, `source_schema_version`, and `record_count`.
++
++Dates are stored as ISO 8601 date text. `serial_key` is the normalized form described under Lookup Behavior; `serial` preserves the form supplied by the snapshot.
++
++A prepared index is immutable. Lookups open it read-only (`mode=ro`, `PRAGMA query_only=ON`) and never write to it. The registry is the only component that opens the database.
++
++### Activation
++
++A newly built index is published by atomically replacing the `active` pointer file, not by editing the live database. Write the new pointer to `active.tmp` in the same directory, flush it, rename it over `active`, then flush the directory. Lookups that already opened the previous index finish against it; subsequent lookups resolve the new pointer. The previous snapshot directory is retained until a later activation succeeds, then removed on a best-effort basis. A failed build or failed pointer replacement leaves `active` unchanged.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++1. Verify the snapshot signature with the bundled public key over the received file bytes. Reject the snapshot if verification fails.
++2. Reject the snapshot if its schema version is not supported by this kiosk build.
++3. Create a new empty database in a staging directory on the same filesystem as `registry/snapshots/`.
++4. Stream the snapshot records into the staging database. Normalize each serial to `serial_key`; reject the import if a record fails validation or if two records produce the same `serial_key`. Insert all records in one transaction and write the snapshot metadata.
++5. Flush the completed database to disk, then close it.
++6. Atomically activate the staged snapshot as described under Activation.
++7. Remove staging files on any failure and report an error that identifies the failed stage. The previously active snapshot remains active throughout.
++
++Because the pointer changes only after the complete index is built and flushed, a lookup observes either all records of the previous snapshot or all records of the new one, never a partial import.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize the requested serial by trimming surrounding whitespace and uppercasing ASCII letters `a`–`z`. Non-ASCII letters are left unchanged so normalization does not depend on the kiosk locale. Serial-number punctuation and internal whitespace remain significant.
++
++Resolve the active snapshot, open its index read-only, and query `records` by `serial_key`. On a match, return the stored serial and equipment fields with the snapshot's `snapshot_date`. On no match, return `NotFound` with the same `snapshot_date`. Reuse an open read-only handle while the `active` pointer is unchanged, and reopen it when the pointer changes. No lookup uses the network.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory; managed search service | Keeps every lookup on kiosk-local files, satisfying the offline tenet. Avoids a service to operate and credentials to manage. Accepts that each kiosk validates and rebuilds its own index when a snapshot arrives, all within this node. |
++| Index key | Store a normalized `serial_key` as the primary key and validate uniqueness on it | Store the raw serial and normalize during query | A lookup key must identify at most one record. Normalizing at build time makes that constraint enforceable at import and keeps query behavior identical to the import's duplicate check. |
++| Snapshot activation | Immutable per-snapshot database plus atomic `active` pointer replacement | Replace a single live database in place; rename the database over a fixed name | The pointer swap publishes the entire snapshot at once and leaves the previous snapshot untouched if an import fails. Avoids replacing a file that may be open for lookup. |
++| Index build scope | Rebuild the complete index from the snapshot on each kiosk | Incremental update of an existing index | Snapshots are complete replacements, so an incremental path would add state and failure modes without removing the need to validate the whole snapshot. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Lookup backend selected: local embedded SQLite index. See Decisions & Alternatives.
++
++### Deferred
++
++1. Lookup before any snapshot has been activated: the fixed result type has no representation for "no active snapshot". Define whether the registry refuses lookups with a distinct error or the kiosk guarantees a valid snapshot before the interface is exposed.
++2. Behavior when the `active` pointer is missing or names an unreadable index at startup: decide whether the registry refuses to start or exposes a recoverable error, and how a technician recovers without the central inventory team.
++3. Bounds on snapshot record values (maximum serial length, required record fields, treatment of empty normalized serials): define during index-build implementation or add as constraints to the snapshot schema.

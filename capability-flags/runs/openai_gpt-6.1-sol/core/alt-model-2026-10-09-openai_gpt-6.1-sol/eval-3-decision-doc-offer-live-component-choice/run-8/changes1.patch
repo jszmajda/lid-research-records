@@ -1,0 +1,115 @@
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..2837655 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -5,37 +5,97 @@ prefix: REC
+ 
+ # Record Store
+ 
+-## Context
++## Context and Design Philosophy
+ 
+ This node owns visit persistence and the meaning of a current visit when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a catalog plot ID. Updates can arrive days after their starting state was fetched. The server must not treat arrival order as evidence that one worker's observations are more authoritative.
+ 
+-Tablet-sync and review-export are not yet designed. Their contracts depend on the concurrency mechanism selected here. Neither the HLD nor the catalog contract selects that mechanism.
++Whole-visit revisions preserve a submitted observation as a scientific unit. The record store automatically advances a visit only along an uncontested revision sequence. Competing complete revisions become coordinator review work, including revisions that differ only in apparently unrelated fields.
+ 
+ ## Architecture
+ 
+-The record store exposes authenticated submission, current-state retrieval, submission-history retrieval, and review-outcome operations. Persistence keeps original submissions, their authors, and server receipt times. A submission carries an idempotency key so a connection failure does not create another edit on retry.
++The record store exposes authenticated submission, visit-state retrieval, revision-history retrieval, and coordinator resolution operations. Persistence keeps immutable original submissions, their authors, and server receipt times, alongside revision relationships and review outcomes. Acceptance and the corresponding visit-state transition are committed atomically, serialized per visit.
+ 
+ A visit's scientific fields include observation date, observer list, species cover estimates, and notes. Some edits are unrelated, such as correcting an observer name and adding a missing species. Other edits are related, such as revising a species identification and its cover estimate. The server cannot infer all such relationships from field names.
+ 
+-The selected concurrency policy will define the remaining submission metadata and review operations. They are deliberately not specified yet.
++Revision IDs are opaque server-issued identifiers, not timestamps or authority rankings. A base revision ID names the stored revision from which the worker edited. Revision payloads contain the complete visit, including its plot UUID and all scientific fields. Relationships and resolution outcomes remain separate from those payloads.
+ 
+ ## Submission and Retrieval
+ 
+-Authenticate the submitting worker and validate field types and plot references before accepting a submission. Preserve the original payload separately from any later resolved or combined representation. A retry with the same key and identical payload returns the original acceptance result; reuse with a different payload is rejected.
++### Submission envelope
+ 
+-Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
++| Field | Meaning |
++|---|---|
++| `visitId` | Client-generated UUID identifying the visit |
++| `idempotencyKey` | Retry identity, scoped to the authenticated author |
++| `baseRevisionId` | Revision being edited; null for an initial submission |
++| `payload` | Complete plot reference, observation date, observer list, species cover estimates, and notes |
+ 
+-## Open Design Choice: Concurrent Visit Edits
++The authenticated identity supplies the author ID; client timestamps do not determine precedence. Validate field types and resolve the plot UUID through site-catalog. Historical references remain resolvable after archival. A non-null base must exist and belong to this visit; an invalid base is rejected rather than treated as a competing revision.
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++An accepted submission receives a submission ID, revision ID, and server receipt time. The acceptance result also records whether this submission advanced the current revision or entered review, plus the visit-state version at acceptance. Acceptance means durable storage, not review approval or export inclusion.
+ 
+-Two approaches remain credible:
++A retry with the same author-scoped key and identical envelope returns the original acceptance result without creating another submission. Reuse with a different envelope is rejected. Equality includes the visit ID, base ID, and complete payload; the concrete payload-equivalence rule remains an open question. Authentication and retry lookup precede state-dependent validation so later visit changes do not invalidate a previously accepted retry. Live visit state is retrieved separately from the historical acceptance result.
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++### Visit state and transitions
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++| Existing state | Accepted submission | Result |
++|---|---|---|
++| Visit absent | Null base | Create the visit with this revision as current |
++| Current, no unresolved work | Base equals current revision | Advance current to the submitted revision |
++| Current, no unresolved work | Base differs from current, including null base | Enter review with the current revision and incoming revision as candidates |
++| Review pending | Any valid base, including null base | Retain the incoming revision in the unresolved candidate set; remain in review |
++
++Review-pending visits have no usable current revision. Their last settled revision remains available as historical context. Every accepted incoming revision remains stored, even if its content duplicates another revision. Revision ancestry and the unresolved candidate set let coordinators see successive edits as well as competing edits; arrival order does not select a winner.
++
++Visit-state retrieval returns the visit ID, state version, `current` or `reviewPending` status, current revision when usable, last settled revision for context, and unresolved revision IDs. Revision-history retrieval supplies complete payloads, authors, receipt times, base relationships, and recorded resolution outcomes. An unknown visit returns a distinct not-found outcome.
++
++### Error outcomes
++
++Submission errors distinguish unauthenticated callers, invalid payloads, unknown plot references, unknown bases, bases belonging to another visit, and idempotency-key reuse with different content. Rejection does not create an accepted revision or change visit state. Coordinator operations additionally distinguish unauthorized callers and stale review state. HTTP mapping and the concrete field-validation schema are deferred public-contract details.
++
++## Coordinator Resolution
++
++A coordinator reads a versioned review snapshot and submits a resolution identifying the visit, expected state version, and the complete candidate set being resolved. A submission arriving during review changes that version. The store rejects a stale resolution so newly arrived work cannot be cleared without inspection.
++
++An accepted resolution atomically records the coordinator identity, server time, contributing submission IDs, the candidates addressed, and the resulting whole-visit revision. Original revisions remain available regardless of the outcome. Resolving the complete current candidate set restores a usable current revision; a later submission based on an older revision reopens review.
++
++The resolution payload is an open design choice: selecting an existing complete revision and authoring a new complete coordinator revision have different review-interface and provenance costs. Both preserve whole-visit semantics; neither permits automatic field-level merging. Resolution retry identity and the exact success response must be specified with the selected operation.
+ 
+ ## Downstream Contract Work
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++Tablet-sync depends on complete visit payloads, base revision IDs, durable retry keys, and a distinction between accepted submissions and usable current state. Its local storage, retry state machine, and worker-facing messages belong to its own design.
++
++Review-export depends on complete revision history, versioned unresolved candidate sets, and coordinator resolution outcomes. It needs a revision comparison workflow. Visits with unresolved review work are excluded from CSV export; the last settled revision is historical context, not an export fallback. Review approval, export snapshots, CSV formatting, and the coordinator interface belong to review-export.
++
++These are obligations for subsequent sibling designs, not completed tablet-sync or review-export designs.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Concurrent visit edits | Whole-visit revisions with coordinator review of competing revisions | Field-aware three-way merge of disjoint edits | Scientifically related changes can span fields that appear independent. Preserving submitted visits as units avoids maintained merge rules that can combine such changes unnoticed. The team accepts a larger review queue in exchange for this preservation and lower merge-rule maintenance burden. |
++| Precedence | Base-revision relationships and explicit review outcomes | Last-arrival or client-timestamp winner | Offline delay and tablet clocks do not establish scientific authority; either winner policy can hide another worker's correction. |
++| Resolution concurrency | Compare the complete candidate set against a visit-state version | Resolve the snapshot without checking for arrivals | A coordinator's outcome must not silently close work that arrived after the reviewed snapshot. |
++
++## Open Questions & Future Decisions
++
++### Design decisions requiring review
++
++1. Can coordinators only select an existing whole revision, or can they also author a new complete visit while resolving competing revisions? Selection-only keeps provenance and the interface simpler; authored resolutions support outcomes where neither submission is scientifically correct but need a complete-edit workflow and explicit provenance.
++2. Is retry payload equality defined by exact serialized bytes or parsed structural values? Byte equality is simple but requires identical retry serialization; structural equality tolerates object-key reordering but needs precise treatment of numbers, arrays, and absent values.
++3. Can a revision correct a visit's plot UUID, or is the visit-to-plot association immutable after creation?
++4. What errors distinguish a resolution against an unknown or already-current visit from a candidate set that omits or adds revisions, even when its expected version matches?
++5. Does selecting an existing revision make that exact revision ID current, or create a new resolution revision? This determines whether later worker submissions based on the selected revision advance directly or return to review.
++6. What version-change invariant covers visit creation, uncontested advancement, and resolution as well as competing arrivals? The token must reliably distinguish the state a coordinator inspected from any intervening state change.
++
++### Deferred contract details
++
++1. Concrete scientific-field validation and transport-level error shapes.
++2. Resolution idempotency and response shape, after choosing the resolution operation.
++3. Database and transaction implementation, after the behavioral contract is reviewed.
++
++## References
++
++- [High-level design](../../high-level-design.md)
++- [Site catalog](../site-catalog/site-catalog-design.md)
++- [Record-store EARS specs](record-store-specs.md)

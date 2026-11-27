@@ -1,0 +1,5 @@
+The table row should be sufficient here. While you deliberated between the options, a cold reader who has seen the HLD tenet ("All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted") will find SQLite fairly obvious — the tenet rules out the network-dependent alternatives, and the table row's rationale captures why SQLite beats alternatives like flat files or custom binary formats.
+
+A full decision doc is justified when the choice stays genuinely live for a cold reader — when they'd be tempted to reverse it without seeing the competing options and criteria. This one reads as settled once you know the local-only constraint. The table row documents enough to prevent re-litigation.
+
+**The gap list above is waiting for your triage** — which gaps should I address in the LLD now versus defer as open questions?

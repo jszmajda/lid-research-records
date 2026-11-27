@@ -1,0 +1,125 @@
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..951eada 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,113 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Design Philosophy
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
+-## Architecture
++All lookups must complete using local files. Each kiosk validates and maintains its own index, ensuring predictable lookup performance without network dependencies. Registry updates arrive as signed snapshots on USB media.
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++## Public Interface
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed. The certificates node uses only this interface and never reads registry storage directly.
++
++**Result types:**
++- `Found(record, snapshotDate)` — record contains serial, calibrationDate, dueDate, description
++- `NotFound(snapshotDate)` — no matching serial; snapshot date still provided
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import accepts a signed snapshot file from USB media and follows this sequence:
++
++1. **Validation** — verify signature using bundled public key, check schema version against supported versions, scan all records for duplicate serial numbers
++2. **Preparation** — create a new SQLite database file containing the snapshot's records and metadata, without touching the active database
++3. **Activation** — atomically replace the active database with the prepared database via file rename
++
++An import failure at any validation step leaves the previous snapshot active and returns a descriptive error. Partial imports are never exposed to lookups.
++
++## Lookup Backend: Local SQLite Index
++
++Each kiosk maintains a single-file SQLite database containing the active snapshot's records and metadata. The database file lives in the application's data directory with a stable name (`active.db`).
++
++**Schema:**
++
++```sql
++CREATE TABLE metadata (
++  key TEXT PRIMARY KEY,
++  value TEXT NOT NULL
++);
++
++CREATE TABLE records (
++  serial TEXT PRIMARY KEY COLLATE NOCASE,
++  calibration_date TEXT NOT NULL,
++  due_date TEXT NOT NULL,
++  description TEXT NOT NULL
++);
++
++CREATE INDEX idx_serial_normalized ON records(UPPER(TRIM(serial)));
++```
++
++The `metadata` table holds `snapshot_date` and `schema_version`. The `records` table uses `COLLATE NOCASE` on the primary key to handle case-insensitive lookups directly. The additional normalized index supports whitespace-trimmed queries.
++
++**Lookup flow:**
++
++1. Normalize input: trim surrounding whitespace, uppercase ASCII letters
++2. Query: `SELECT * FROM records WHERE serial = ?` (SQLite's NOCASE collation handles the uppercase normalization)
++3. Read snapshot date from metadata table
++4. Return `Found` with record and snapshot date, or `NotFound` with snapshot date
++
++**Snapshot preparation:**
++
++1. Create temporary database file (`import-temp-{timestamp}.db`)
++2. Initialize schema and metadata table with snapshot date and schema version
++3. Populate records table from snapshot's JSON lines, checking for duplicate serials during insertion
++4. Run `PRAGMA integrity_check` to verify database consistency
++5. On success, rename to `import-staged.db`
++
++**Snapshot activation:**
++
++1. Close active database connection
++2. Atomic rename: `import-staged.db` → `active.db` (replaces previous active database)
++3. Open new active database connection
++4. Delete old database file
++
++The rename operation is atomic on POSIX filesystems, ensuring lookups never see a partially activated snapshot. If the process crashes between closing and reopening, startup recovery opens whichever `active.db` exists (the successfully renamed one).
++
++## Error Handling
++
++**Validation failures:**
++- Invalid signature → reject, report "Snapshot signature invalid"
++- Unsupported schema version → reject, report "Schema version {version} not supported"
++- Duplicate serials → reject, report "Duplicate serial number: {serial}"
++- Database integrity check failure → reject, report "Database corruption detected"
++
++**Lookup failures:**
++- Database file missing at startup → fatal error, cannot proceed
++- Database file corrupted at startup → fatal error, cannot proceed
++- Query errors during lookup → propagate as internal errors
++
++Validation failures are expected operational scenarios; lookup failures indicate environmental or storage problems requiring administrator intervention.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory: one centrally maintained index, smaller kiosk updates, but network dependency and service timeout handling required. Managed search service: less index maintenance, richer search potential, but recurring cost, credentials, and external connectivity required. | Predictable lookups without network dependencies. Each kiosk validates and rebuilds its own index when a snapshot arrives, keeping all registry logic self-contained. Meets the HLD tenet requiring all lookups to complete using local files. |
++| Snapshot activation mechanism | Atomic file rename | In-place database updates: less disk usage, but risk of corruption during updates. Copy-on-write with symlink swap: similar atomicity, but symlinks add complexity on Windows kiosks. | Atomic rename on POSIX filesystems ensures lookups never see partial updates. Simple to implement and verify. Failed activation leaves previous database intact. |
++| Case normalization | SQLite COLLATE NOCASE | Application-layer normalization: more control, but query logic spread across code. Store both original and normalized columns: faster lookups, but doubles storage and complicates uniqueness checks. | SQLite's built-in collation handles case-insensitive lookups efficiently without duplicating data or spreading normalization logic across the application. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++✅ **Lookup backend selection** — Local SQLite index chosen per user decision on 2026-10-09.
++
++### Deferred
++
++None.
+ 
+-## Lookup Behavior
++## References
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++- HLD: `docs/high-level-design.md`
++- EARS specs: `docs/intent/registry/registry-specs.md`
++- SQLite documentation: https://www.sqlite.org/

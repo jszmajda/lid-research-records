@@ -1,0 +1,5 @@
+I'd call it overkill — stick with the row.
+
+The decision-doc test is forward-looking: would a cold reader of the *landed* result find the choice non-obvious enough to re-litigate without the full tradeoff writeup? Here, once the HLD's existing tenet ("kiosks have no network route during normal operation") is applied, the choice stops being a genuine three-way tie — it eliminates the HTTPS directory and managed-service options outright, since both need connectivity during a lookup. A cold reader hits that tenet, sees SQLite is the only compliant option, and isn't tempted to reverse it. The going-back-and-forth was real, but it's a symptom of the deliberation being hard, not of the landed choice staying live — and the template is explicit that a hard debate can still resolve to a one-line row.
+
+The row I wrote captures the "why this" in one line (the tenet) plus the cost it incurs (per-kiosk rebuild work) and confirms the certificate interface is untouched — that's enough for a fresh reader to not question it. I'll leave it as a row.

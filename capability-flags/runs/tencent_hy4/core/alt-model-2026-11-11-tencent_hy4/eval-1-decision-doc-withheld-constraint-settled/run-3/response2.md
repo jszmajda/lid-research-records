@@ -1,0 +1,9 @@
+No — a decision doc is overkill here, and on a closer read of the heuristic I shouldn't have framed it as borderline; the test resolves cleanly to the Decisions & Alternatives row already in the registry LLD:
+
+- **An inherited constraint settles it.** The HLD tenets ("no runtime network access is permitted," "Signed USB snapshots are the only registry update channel") already eliminate the on-site HTTPS directory and the managed search service. The local index is the only option consistent with them, so a cold reader of the landed design finds it native, not non-obvious — they would not re-litigate it.
+- **It affects only its own node.** By your own framing, validation, rebuild, and lookup all stay inside the registry component, and the certificate interface stays unchanged. No other design node is sized around the result — one of the skill's explicit disqualifiers.
+- **The debate isn't the test.** "However long the debate ran" is named as a symptom, not the test; "went back and forth… looked pretty close at first" describes deliberation, not the landed state.
+
+A full doc (criteria, gates, per-option analysis, Selection) is reserved for choices that stay genuinely live and that other nodes lean on. Here the structure documents itself and the row's one line of rationale is the right ceiling; recording a settled-obvious choice at higher resolution is exactly the residue *docs carry current intent* strips.
+
+So my recommendation: no decision doc, keep the row. It's still your call — if you want one anyway, say so and I'll write `docs/intent/registry/decisions/lookup-backend.md` and link it from the row; I won't write it otherwise. I'm holding at the Phase 2 stop: I also need your ruling on the tenet lean, the five gap triages, and explicit approval before Phase 3 (EARS specs → intent-narrowing edge audit → tests-first → code).

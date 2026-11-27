@@ -1,0 +1,3 @@
+I’d record the choice in the preview LLD’s **Decisions & Alternatives** table rather than create a separate decision doc. The 2Q tradeoff is worth preserving, but it only shapes the preview cache, so a focused row can capture the options and rationale without adding another artifact.
+
+I’m still at the Phase 1 review stop: please confirm the HLD wording update, and I’ll continue with the preview design.

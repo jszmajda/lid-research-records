@@ -1,0 +1,96 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..b9403ec 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Lookup storage is private to this component.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..e8af8d6 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,74 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Design Philosophy
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
++Registry lookup runs entirely on the kiosk. Signed USB snapshots are the source of inventory data; the local index is a derived, read-only lookup representation. Each kiosk validates and builds its own index. The design targets approximately 90,000 records, snapshots up to 150 MB, and lookup within 250 ms on a kiosk with 4 GB of RAM.
++
+ ## Architecture
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, SQLite database construction, activation, and lookup all belong to this node. SQLite is embedded in the kiosk application and requires no service process. Database paths, connections, and query details are private to the registry.
++
++Each prepared snapshot has its own database file. The active database is opened read-only for lookups; an import builds a separate candidate database. A lookup uses one database generation for both the record and snapshot date so activation cannot combine data from different snapshots.
++
++## SQLite Storage
++
++The candidate database contains:
++
++- A metadata table holding the snapshot date and source schema version.
++- A records table holding the fixed registry record fields and a normalized serial-number key.
++- A unique index on the normalized serial-number key, using exact binary comparison.
++
++The same normalization function generates import keys and lookup keys: trim surrounding whitespace and uppercase ASCII letters, preserving punctuation and non-ASCII letter case. Uniqueness is checked after normalization; two source serials that produce the same lookup key cannot identify separate records.
++
++Records are streamed into the candidate database within a transaction rather than loading the full snapshot into memory. The database contains the fields needed to construct the existing lookup result without consulting USB media. Snapshot metadata is stored with the records so results remain associated with their source snapshot.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++1. Copy the candidate snapshot from USB into private local staging storage. Signature verification and database construction use those same staged bytes.
++2. Verify the signature using a bundled public key and reject unsupported schema versions.
++3. Stream the records into a separate SQLite database, validating records against the supported source schema and enforcing normalized serial-number uniqueness.
++4. Commit the completed candidate database and verify that it can be opened for read-only lookup with its snapshot metadata.
++5. Publish the completed database by atomically replacing the local active-database reference. Only a fully validated and prepared candidate is eligible for publication.
++
++The active-database reference names one complete database generation. The reference and database files live on local storage supporting atomic reference replacement. Database preparation never modifies the active generation. Lookups already using the previous generation finish against it; new lookups use the published generation. Retired database files are removed only after their readers have finished.
++
++An invalid signature, unsupported schema version, invalid record, duplicate normalized serial, or preparation failure rejects the candidate and reports the failed import stage and cause. A failed import leaves the previous snapshot available. Staging storage and the candidate database can be discarded without altering the active generation.
++
++The persistent active-database reference selects the generation on application startup. Recovery from interrupted publication and the durability guarantee for abrupt power loss are design questions below.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Acquire the active database generation, normalize the input, and execute a parameterized equality query against the unique serial-number index. Construct `Found(record, snapshotDate)` for a match or `NotFound(snapshotDate)` for an absent key, obtaining the date from that same generation. Serial-number punctuation remains significant.
++
++Lookup requires only local files and the embedded SQLite library. Keeping the query on a unique index avoids scanning the full registry for each request. The 250 ms goal needs verification on kiosk-class hardware with a representative 90,000-record snapshot; the index alone is not evidence that the target is met.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory; managed search service | Kiosks have no runtime network route, and lookup must complete from local files. Both service options require connectivity that the HLD forbids. SQLite supports indexed lookup without running a service; each kiosk accepts responsibility for validating snapshots and rebuilding its own index. |
++| Snapshot preparation and activation | Separate immutable database generations with atomic publication | Rebuild the active database in place | Separate preparation preserves the last valid snapshot on import failure and keeps partial records out of lookups. Existing readers can finish against a consistent generation. |
++| Serial-number comparison | Shared normalization with a unique binary-comparison key | Raw-serial uniqueness; database collation-based matching | Import uniqueness must agree with lookup normalization. An explicit normalized key preserves punctuation and avoids broader locale-dependent case folding. |
++
++## Open Questions & Future Decisions
++
++1. What does the kiosk do before its first valid snapshot, or when its active database cannot be opened? `NotFound(snapshotDate)` describes an absent serial in a usable snapshot, not an unavailable registry. The current interface does not define an unavailable result or error path.
++2. What recovery and durability guarantee applies if power is lost during activation? Atomic reference replacement prevents partial publication during normal operation, but startup recovery and durable file/reference writes need an explicit policy.
++3. Can an older signed snapshot replace a newer one, and how are repeated imports identified?
++4. Are simultaneous imports rejected or queued, and how much local disk space is reserved for the active database, candidate database, staged source, and readers retaining older generations?
++5. Which whitespace characters are trimmed, how are empty input and non-ASCII serials validated, and what are the exact supported source-schema fields, date formats, and signature-manifest coverage?
++6. How are runtime query or metadata-read failures represented to callers, and what structured error contract distinguishes import rejection, operational failure, and cancellation?
++7. How is reader acquisition synchronized with publication and retirement, including release on lookup failure or cancellation? If publication succeeds but cleanup or completion reporting fails, what import outcome is reported?
++8. What protects staged bytes from modification between signature verification and database construction?
++9. Are empty snapshots valid, how is source completeness established, and are the stated size and record-count goals also import limits?
++
++## References
++
++- [GaugeDesk high-level design](../../high-level-design.md)
++- [Registry specifications](registry-specs.md)
++- [Certificates design](../certificates/certificates-design.md)

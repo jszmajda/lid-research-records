@@ -1,0 +1,16 @@
+Coherence pre-flight: clean — HLD, LLD, and specs were mutually coherent; the one open item was the unsettled concurrency choice, which your selection resolves. No tests/code exist yet (the specs remain active gaps), so this run stays on the intent rungs.
+
+**Written** (record-store segment only):
+- `docs/intent/record-store/decisions/whole-visit-revisions.md` — the decision doc you approved. It gives field-aware three-way merge its strongest case (small review queue, export-ready visits) and the conditions that would make it preferable on re-run (a queue beyond two coordinators, or reliable scientific-relationship rules), and states the downstream obligations: tablet-sync keeps base revision IDs / sends whole-visit submissions / surfaces pending competing revisions; review-export adds a revision-comparison view, holds unresolved visits out of the CSV, exports only resolved canonical revisions.
+- `record-store-design.md` — the "Open Design Choice" deliberation is gone, replaced by whole-visit revisions as current intent; contract defined (submission envelope, current-state response, competing-revision representation, resolution operation); rejected alternative and rationale now live in the Decisions & Alternatives table, not body prose.
+- `record-store-specs.md` — policy-neutral wording removed (`REC-004`, `REC-005`), `REC-007`–`REC-010` added; IDs `REC-001`–`REC-006` kept stable. Consistency report: coverage complete, no contradictions, scopes explicit, `REC-006` left fork-neutral.
+- `docs/high-level-design.md` — stale "concurrency choice open / must wait for its contract" status corrected.
+
+**Deliberately not done:** I paused at the record-store segment boundary — tablet-sync and review-export designs stay deferred ("we'll do [them] after that"); their obligations are recorded as cascade notes only. No tests or code. I did not write a tenet or settle the resolution fork on your behalf.
+
+Stopping at the phase boundary. I need your ruling on:
+
+1. **Spec fork — resolution outcome.** Does "resolve" mean a coordinator *selects one* competing revision as canonical, or *authors a new* canonical revision? I left `REC-006` and the LLD fork-neutral rather than pick. This needs your intent before any spec/test/code lands against a reading.
+2. **Edge-case probe triage.** Gaps in the LLD — (a) a submission naming a base revision already superseded by a completed resolution: competing revision or stale edit? (b) two coordinators resolving the same visit concurrently: what wins? (c) error shape when a submission names a base revision ID that doesn't exist for that visit. Which fix now, which defer as open questions?
+3. **Tenet.** Your rationale reads as a project tenet — *Prefer surfacing a conflict for human review over reconciling it silently, even when that grows the review queue.* Shall I record it under `## Tenets`?
+4. **Proceed / hold.** Approve these intent rungs so I can continue to the intent-narrowing edge audit → tests → code, or hold at design. And confirm tablet-sync / review-export remain deferred rather than my opening those segments now.

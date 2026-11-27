@@ -1,0 +1,5 @@
+Written up at `docs/decisions/change-delivery-approach.md`, and linked from the HLD's Key Design Decisions row.
+
+It lays out the two gates (15-second freshness, 800-browser/20-edit-per-second scale — all three options pass), the four criteria (recurring cost & vendor coupling, connection/reconnect burden — both major; latency — moderate; store/delivery implementation complexity — minor), and each option's fit against them, written so a cold reader gets each option's honest case rather than just the winner's. Selection explains the self-hosted WebSockets choice as winning both major criteria together (no fee, no coupling, latency on par with the hosted option) at the deliberate cost of weak fit on connection/reconnect burden, and spells out what it obligates downstream for change store, delivery, and browser sync.
+
+HLD and decision doc are ready for your review. Once you're happy with both, say go and I'll move to Phase 2 on the three nodes — change store, delivery, and browser sync.

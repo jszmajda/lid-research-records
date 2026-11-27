@@ -1,0 +1,9 @@
+**F1 — High. The queue’s restart behavior conflicts with the service’s central promise.** `docs/intent/job-queue/job-queue-design.md:14` keeps accepted jobs entirely in process memory and explicitly says undispatched jobs disappear after a restart, requiring members to resubmit them. Yet `docs/high-level-design.md:20` says “A submitted job is a promise,” and the overnight-printing goal assumes members need not be present. The queue’s own context also anticipates unattended OS updates and power blips. This creates a tenet-cascade problem: a concrete overnight power blip can turn an accepted upload into a lost job precisely when nobody is available to resubmit it. My recommendation is to resolve this at the intent layer before implementing the queue, using `/linked-intent-dev` to cascade the chosen resolution into the LLD, EARS specs, tests, and eventually code.
+
+You have three legitimate remedies:
+
+- **Change the design:** persist accepted jobs and their queue positions, then add restart-recovery specs and tests. This preserves the existing tenet and overnight goal, at the cost of additional storage and recovery complexity.
+- **Record an exception:** keep the in-memory queue, but add a Decisions & Alternatives row naming the tenet and goal being traded against, why modest-hardware simplicity wins, and the accepted consequence that members must resubmit after restarts.
+- **Revise the tenet:** narrow the HLD’s promise and overnight goal to describe best-effort queuing explicitly. This makes the current design coherent, but changes the service’s user-facing commitment rather than merely documenting an exception.
+
+I would not leave the current implicit contradiction in place: otherwise implementers must choose between durability and simplicity without knowing which user promise they are allowed to sacrifice.

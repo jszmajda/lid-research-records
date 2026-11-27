@@ -1,0 +1,3 @@
+Overkill. The offline tenet settles it — an inherited constraint eliminates both network options, and the choice affects only the registry node (the certificate interface is unchanged). Per LID's earns-its-place test, that's a Decisions & Alternatives row, not a full doc. The row is already in the LLD.
+
+Still waiting on the review gate: approve the LLD (with any numbered fixes and gap triage), and I'll move to the Phase 3 `REG-*` specs.

@@ -1,0 +1,67 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..475d36e 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup; keeps its lookup index private.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..681cf8e 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -11,14 +11,45 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`, where `record` carries the equipment description, calibration date, and due date. The certificates node uses only this interface; SQLite files, schema, and storage paths stay private to this node.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, SQLite index construction, active-snapshot switching, and lookup all run in-process inside this node using an embedded SQLite library with no separate service or runtime network access.
++
++## Index Storage and Schema
++
++Each imported snapshot builds a self-contained, immutable SQLite database file in the kiosk's local registry directory:
++
++- `metadata`: single row storing `snapshot_date` and `schema_version`.
++- `records`: keyed by `normalized_serial TEXT PRIMARY KEY`, with `description TEXT NOT NULL`, `calibration_date TEXT NOT NULL`, and `due_date TEXT NOT NULL`.
++
++An active-snapshot pointer file in the same local directory names the currently active SQLite database file. Updating that pointer via write-to-temp and atomic rename switches snapshots without mutating an active database in place.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import processes a signed snapshot package from approved USB media in four stages:
++
++1. **Envelope validation**: Verify the signature manifest against the snapshot payload using the bundled public key and check that `schema_version` is supported before allocating or populating an index.
++2. **Streamed staging build**: Stream the newline-delimited JSON records into a staging SQLite file inside a single write transaction, keeping memory usage bounded on a 4 GB kiosk for snapshots up to 150 MB and 90,000 records.
++3. **Record normalization and uniqueness**: Normalize each record's serial number (trim surrounding whitespace, uppercase ASCII letters `a`–`z`, preserve punctuation) and insert into `records`. Reject the import if any record is malformed or collides on `normalized_serial`.
++4. **Atomic activation**: Write `snapshot_date` and `schema_version` to `metadata`, commit and sync the staging SQLite file, open the new read-only snapshot handle against it, atomically replace the active-snapshot pointer file (syncing pointer file and directory), and swap the in-process active handle reference.
++
++If any step before pointer replacement fails, close any staging handles, delete the staging SQLite file, keep the previously active snapshot serving lookups unchanged, and return a descriptive import error.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Open the active snapshot SQLite file in read-only mode and cache `snapshot_date` alongside the snapshot handle from `metadata`.
++
++On `findBySerial(serial)`, trim surrounding whitespace and uppercase ASCII letters (`a`–`z` to `A`–`Z`) while leaving punctuation unchanged. Execute a parameterized primary-key lookup against `records.normalized_serial`:
++
++- Match found: return `Found(record, snapshotDate)`.
++- No match: return `NotFound(snapshotDate)`.
++
++In-flight lookups retain a reference to the read-only snapshot handle they started with so concurrent snapshot activation never interrupts an active query or mixes `record` and `snapshotDate` across snapshots.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index rebuilt on each snapshot import | On-site HTTPS directory; managed search service; scanning raw NDJSON or holding a full in-memory map | Satisfies the HLD offline/no-runtime-network tenet without external services, credentials, or network timeouts; bounds RAM on 4 GB kiosks for 150 MB snapshots while keeping 90,000-record point lookups well under 250 ms; keeps index lifecycle private to Registry. |
++| Snapshot activation | Build a fresh immutable SQLite file in staging and atomically swap the active pointer | Mutate a single SQLite database in place within a write transaction | Avoids write-lock contention with concurrent kiosk lookups during 90,000-row imports and guarantees a failed or interrupted import leaves the active database file untouched. |
++| Serial-number key | Normalize serial numbers on import and store `normalized_serial` as `PRIMARY KEY` | Query-time `UPPER(TRIM(...))` scan or custom SQLite collation on raw serials | Applies whitespace and ASCII-case normalization identically at import and lookup, enforces uniqueness under lookup equivalence, and uses a standard B-tree primary-key lookup. |

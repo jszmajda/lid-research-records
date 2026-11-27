@@ -1,0 +1,32 @@
+**Strong design foundation; pre-implementation with configuration, tenet-alignment, and lifecycle-edge gaps.**
+
+**Scorecard**
+- ✓ **HLD & prose hygiene** — concise, domain-fluent docs written in the present tense with no historical residue
+- ✓ **Mode & tree layout** — `Full` mode matches the project, with clean node-as-folder boundaries under `docs/intent/`
+- ✗ **Arrow completeness** — all 13 EARS specs carry `[x]` implemented markers, while tests and source code do not exist yet
+- ⚠ **Configuration & frontmatter** — `CLAUDE.md` is missing the LID workflow directives block, and leaf designs omit `parent:`/`prefix:` frontmatter
+- ⚠ **Tenet alignment & decision capture** — local-branch allocation pulls against HLD Tenet 1 without a `Decisions & Alternatives` row, and the HLD tenets mix leans with spec-shaped rules
+- ⚠ **Spec & lifecycle precision** — hold cancellation, `allocated`-copy clearing, and `"open hold"` scoping leave edges open across both components
+
+Shelfwise's problem framing, domain vocabulary, clean node-as-folder split (`hold-allocation` and `pickup-notices`), and tradeoff capture in `pickup-notices-design.md` give the arrow a crisp start; the highest-leverage next step is reconciling `CLAUDE.md` and spec status markers, then settling the local-branch vs. sequence tenet tension and hold-cancellation lifecycle before writing failing tests.
+
+**Findings (10 total · 4 high · 5 medium · 1 low)**
+- **F1 (high):** `CLAUDE.md` carries the `## LID` mode/version block without the `## Linked-Intent Development` workflow directives block (reconcilable via `/update-lid`) · *modes are declared, not inferred* — explicit instruction-file configuration anchors how every session walks the arrow
+- **F2 (high):** All 13 specs in `hold-allocation-specs.md` and `pickup-notices-specs.md` are marked `[x]` although no test or implementation files exist yet · *canonical arrow shape* — every in-scope component walks `HLD → LLDs → EARS → Tests → Code`, with `[x]` reserved for specs realized in tests and code
+- **F3 (high):** Local-branch-first matching in `hold-allocation-design.md` (`HOLDALLOC-003`, `HOLDALLOC-004`) lets newer local holds jump ahead of older remote holds, working against HLD Tenet 1 ("Waiting is honored in sequence") with no recorded exception · *tenets capture forward-looking preference* — leaf mechanisms lean the way the HLD's tenets say to lean unless a recorded tradeoff explains the exception
+- **F4 (high):** `hold-allocation` assumes patrons cancel holds (`hold-allocation-design.md` lines 13 and 23, `HOLDALLOC-007`) without specifying cancellation across states, clearing `allocated` (`HOLDALLOC-006` vs. `HOLDALLOC-007`/`HOLDALLOC-005`/`PICKUP-005`), or printing a holds-shelf slip on normal transit arrival · *LLDs close enough of the solution space* — leaf designs close state transitions tightly enough that two agents land on compatible implementations without guessing
+- **F5 (medium):** Local-branch priority over county-wide FIFO in `hold-allocation-design.md` (line 11) sits in body prose with no `Decisions & Alternatives` row capturing what was weighed or the wait-time cost to patrons at quieter branches · *docs carry current intent, written to be read cold* — choices a cold reader holding the HLD would question need enough recorded rationale to reconstruct the tradeoff
+- **F6 (medium):** `"open hold"` in `HOLDALLOC-003` and `HOLDALLOC-004` is not disambiguated from open holds that already have an `allocated` copy (which still count toward `HOLDALLOC-002`'s 15-hold cap until closed) · *scope disambiguation* — each spec names its exact condition so a literal or grep-isolated reading cannot match the wrong state
+- **F7 (medium):** `docs/high-level-design.md` `## Tenets` uses an unordered list for four tenets that can conflict, includes a near-platitude ("Routine steps are automated"), and embeds triggered EARS-shaped rules ("A closed hold's record is deleted") · *tenets capture forward-looking preference* — tenets work best as ordered, one-line tie-breakers with a defensible opposite rather than values or *when X, do Y* rules
+- **F8 (medium):** Both `hold-allocation-design.md` and `pickup-notices-design.md` omit `parent:` and `prefix:` YAML frontmatter bridging their folder names to the `HOLDALLOC` and `PICKUP` namespaces · *effective intent-tree alignment* — leaf design docs declare their parent node and owned EARS prefix so the tree is walkable in both directions
+- **F9 (medium):** Shared hold and copy lifecycle concepts (`open` vs. `closed`, `allocated`, record deletion on closure) span `hold-allocation` and `pickup-notices` without a shared state model in `docs/high-level-design.md` · *intent attaches at the lowest node that dominates it* — terms and invariants shared by sibling leaves belong at their common parent
+- **F10 (low):** `pickup-notices` leaves unanswered automated-dialer calls (`PICKUP-006` vs. line 5's three channels), 7-calendar-day date/closed-branch boundaries (`PICKUP-001`/`002`), checkouts between overnight lapse (`PICKUP-004`) and shelf pull (`PICKUP-005`), and line 11's expiry-timing shorthand open to cold-reader interpretation · *docs carry current intent, written to be read cold* — future sessions read docs without chat history, so unstated boundary assumptions become silent implementation forks
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/hold-allocation/hold-allocation-design.md`, `docs/intent/hold-allocation/hold-allocation-specs.md`, `docs/intent/pickup-notices/pickup-notices-design.md`, `docs/intent/pickup-notices/pickup-notices-specs.md` (entire repository; `docs/arrows/` overlay not present)
+- Enumerated: 1 HLD, 2 leaf LLDs, 2 spec files, 13 EARS specs (`HOLDALLOC-001`–`007`, `PICKUP-001`–`006`), 7 `Decisions & Alternatives` rows
+- Test and code inspection: exhaustive repo scan — 0 test files, 0 source code files, 0 `@spec` annotations
+
+Want me to walk through the findings in detail, focus on a specific priority tier or theme, or work through individual items like **F3**/**F5** or **F4** together?
+
+If you have broader questions about using LID on Shelfwise — walking these two segments into tests-first implementation with `/linked-intent-dev`, deciding when a tradeoff warrants a decision doc vs. a table row, or adding the `/arrow-maintenance` overlay as the codebase grows — I can help with those too.

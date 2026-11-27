@@ -1,0 +1,68 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..da6713b 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache using 2Q eviction.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+@@ -27,7 +27,7 @@ The review API accesses previews only through the fixed HTTP interface. No other
+ - Support 24 active editors on one eight-core preview worker during the pilot.
+ - Limit cached JPEG data to 12 GiB.
+ - Deduplicate concurrent rendering requests for the same preview key.
+-- Return a ready preview or a pending response through the same interface for every eviction policy.
++- Return a ready preview or a pending response through the same interface regardless of cache contents or eviction outcomes.
+ 
+ ## Non-Goals
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..78f8a1b 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,13 +7,13 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, and the cache must keep the comparison working set from being displaced by a screening's one-use scan.
+ 
+ ## Architecture
+ 
+-Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. This contract is fixed regardless of cache eviction policy.
++Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. The contract does not depend on cache contents or eviction outcomes.
+ 
+-Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect policy counters, or depend on entries remaining warm.
++Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect policy queues, or depend on entries remaining warm.
+ 
+ ## Rendering and Deduplication
+ 
+@@ -21,6 +21,22 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. Eviction uses 2Q: a first-use queue ordered FIFO and a reused queue ordered by recency. A completed sheet enters the tail of the first-use queue. A hit on a first-use entry promotes it to the reused queue; a hit on a reused entry makes it the most recently used.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The first-use queue is limited to a tunable share of the cache, initially 3 GiB of the 12 GiB budget; the reused queue holds the remainder. On admission, if the first-use queue would exceed its share, the oldest first-use entries are evicted until it fits. If cached JPEG data would still exceed 12 GiB, least-recently-used reused entries are evicted until it fits. A long screening therefore churns the first-use share, while sheets requested again move to the reused queue and survive the scan.
++
++Replacement bookkeeping stays private to the worker. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q: a first-use FIFO queue and a reused recency queue with a tunable size split | LRU; frequency-based eviction with aging | 2Q keeps sheets requested repeatedly in the reused queue while a long screening scans through many one-use sheets. LRU lets that scan evict the comparison working set. Aged frequency counters retain repeated clips but add counter maintenance and can keep a previous project's favorites after a switch. The HTTP contract, render queue concurrency, and 12 GiB budget are unchanged under all three; 2Q pays with a second queue and a size-split parameter. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. First-use share: start at 3 GiB (25% of 12 GiB); tune from pilot workload measurements.
++2. Remembered first-use keys: an entry evicted from the first-use queue and requested again is re-rendered and re-enters the first-use queue. Whether to remember recently evicted first-use keys so that such a request is admitted directly to the reused queue is undecided.
++3. Scan-only capacity: with no entries in the reused queue, the first-use queue remains capped at its share, leaving the rest of the 12 GiB unused. Confirm whether that capacity should stay idle or be available to first-use entries while the reused queue is empty.

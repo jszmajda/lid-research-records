@@ -1,0 +1,13 @@
+**Reconstructed EARS requirements — price-reading classification (non-positive / non-finite), `price_to_cents` and `read_marks`**
+
+1. **Ubiquitous.** The price→Cents boundary shall convert a USD `f64` price to `Cents` using exactly one rounding rule: scale `price_usd × 100` by a fixed integer `SCALE = 1_000_000` to an integer numerator, then apply `round_half_to_even` (banker's rounding) over that numerator/SCALE — never the float's own rounding. Ties round to the even cent (e.g., `1.005 → 1.00`, `1.015 → 1.02`).
+
+2. **Unwanted behavior (event-driven).** When a price reading is non-finite (`NaN`, `+Infinity`, or `-Infinity`) — checked both on the raw input and, redundantly, on the post-scale intermediate value (guarding multiply-overflow-to-infinity) — the conversion shall return `Err(DegradeReason::Permanent)` and shall produce no `Cents` value.
+
+3. **Unwanted behavior (event-driven).** When a finite price reading, after rounding, yields a `Cents` amount ≤ 0 — covering (a) an exact `0.0` price, (b) any negative price, and (c) a positive sub-cent price that rounds down to 0 — the conversion shall return `Err(DegradeReason::SubCent)` and shall never return `Ok(Cents(0))` or a negative `Cents`. A degraded-to-zero mark is explicitly never treated as a real zero mark.
+
+4. **State-driven.** While consuming a `PriceReading::Numeric` inside the settle pass (`read_marks`), if `price_to_cents` returns `Err(reason)` (either `SubCent` or `Permanent`), the system shall record that symbol in `MarksProduced.degraded` keyed by that reason and shall NOT insert an entry in `MarksProduced.marks` — and shall NOT fall back to any prior cached mark for that symbol (prior-mark carry-forward is reserved for the transient/timeout path only, not for a numeric-but-invalid reading).
+
+5. **Ubiquitous.** A symbol recorded in `degraded` (for any reason, including `SubCent`/`Permanent`) shall be absent from `MarksProduced.marks` and, via `to_ledger_marks`, absent from the `ledger_core::Marks` map passed to replay — never present as `Cents(0)` or any placeholder value — so the kernel degrades that symbol's unrealized computation per-symbol instead of receiving a false price.
+
+Constants pinned: `SCALE = 1_000_000`; rounding = `round_half_to_even`; classification boundary = `cents <= 0` (inclusive of zero) → `SubCent`; non-finite (`NaN`/±∞) → `Permanent`. No other price value maps to `Permanent`; no zero/negative price ever maps to a successful `Ok`.

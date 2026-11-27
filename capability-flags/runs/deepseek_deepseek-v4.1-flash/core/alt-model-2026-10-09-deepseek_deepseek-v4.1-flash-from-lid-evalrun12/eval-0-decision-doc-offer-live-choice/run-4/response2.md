@@ -1,0 +1,91 @@
+Wrote `docs/decisions/change-delivery-route.md` and linked it from the HLD's Key Design Decisions bullet. Full text:
+
+---
+
+# Decision: Change delivery route
+
+## Context
+
+MarketBoard keeps one authoritative board per event. Editors submit commands over HTTPS and the server assigns each committed edit a single event revision. The committed revisions must then reach up to 800 simultaneous staff browsers per busy market, with opening-time bursts.
+
+The delivery route is load-bearing because it fixes the contract across three nodes that are designed together: what the change store must retain for a browser that has fallen behind, what delivery must manage to move changes, and what each browser must implement to stay current. The freshness goal is 15 seconds under normal connectivity; subsecond updates are useful but not required. All three routes below meet the 15-second goal, so none is eliminated by it, and neither operating cost nor minimum operational burden has been declared the overriding criterion. The choice is therefore scored, not gated.
+
+Two project invariants constrain every route without distinguishing among them: a committed edit has one authoritative event revision regardless of its delivery route, and event updates carry stall IDs and operational statuses, not customer records.
+
+## Decision Elements
+
+**Weighted criteria**
+
+- **Update freshness** (moderate). How quickly a committed revision reaches a connected browser. Subsecond is preferred but not required; the 15-second goal is the floor.
+- **Operating cost** (moderate). Recurring spend and read/connection load at 800 concurrent browsers.
+- **Operational burden** (major). The ongoing work to keep delivery running and correct at event scale, including connection capacity and reconnect handling.
+- **Vendor independence** (major). Whether the core update path depends on an external provider's API, pricing, and availability.
+- **Availability during event hours** (moderate). The ability to hold the 99.5 percent availability goal during published event hours, and who is on the hook when the path fails.
+- **Downstream design burden** (minor). The machinery each route forces into the change store, delivery, and browser sync.
+
+## Options in the Domain
+
+### Five-second HTTPS polling
+
+Browsers issue an HTTPS GET every five seconds asking for changes since the revision they last saw. Delivery is stateless request/response: the server answers each request from the change store's read index, and a browser updates its view when the response carries a newer revision. Browsers run a polling loop; there is no long-lived connection.
+
+*Demonstration:* `GET /events/{id}/changes?since=rev-1042` returns `{ "from": "rev-1042", "to": "rev-1047", "changes": [...] }`.
+
+**Analysis**
+
+- Update freshness: **partial** — a committed change waits up to five seconds plus request time before a browser sees it; within the goal, but never subsecond.
+- Operating cost: **partial** — 800 browsers polling every five seconds issue about 160 requests per second even when nothing changes, each a repeated read of the read index.
+- Operational burden: **strong** — no long-lived connections to hold and no reconnect state; delivery reuses the same HTTPS boundary as commands.
+- Vendor independence: **strong** — no external service is involved.
+- Availability during event hours: **strong** — the stateless read path scales and fails independently per request.
+- Downstream design burden: **strong** — the store needs only a cursor query; delivery stays request/response; browsers run a polling loop. No replay or session machinery.
+
+*Summary:* cheapest to build and operate, paid for in repeated reads and seconds of lag.
+
+### Self-hosted WebSockets
+
+The server holds a persistent WebSocket connection per browser. When an edit commits, the server pushes the new revision to every connection subscribed to that event. A browser that reconnects presents the last revision it saw and receives the revisions it missed.
+
+*Demonstration:* the server pushes `{ "event": "evt-7", "revision": "rev-1047", "change": { ... } }`; on reconnect the client sends `{ "since": "rev-1042" }` and the server replays the gap.
+
+**Analysis**
+
+- Update freshness: **strong** — a committed revision is pushed as it lands, effectively subsecond.
+- Operating cost: **strong** — no realtime vendor bill; capacity is self-hosted.
+- Operational burden: **partial** — the project owns connection capacity (800 concurrent sockets plus bursts) and reconnect handling in production.
+- Vendor independence: **strong** — no external realtime service.
+- Availability during event hours: **partial** — long-lived connections concentrate failure, and the project owns the 99.5 percent goal for the socket path.
+- Downstream design burden: **partial** — the store must keep replayable revisions and a reliable publication path; delivery manages sessions and capacity; browsers implement reconnect and catch-up.
+
+*Summary:* fast updates and no vendor, paid for in connection and reconnect operations.
+
+### Hosted realtime service
+
+A third-party realtime provider carries change notifications. The server publishes each committed revision to the provider; browsers subscribe through the provider's client and receive pushes. The provider owns connection capacity and reconnect.
+
+*Demonstration:* the server calls `publish(channel, revision)`; a browser calls `subscribe(channel, callback)` and receives pushed revisions.
+
+**Analysis**
+
+- Update freshness: **strong** — the provider pushes as soon as it receives the publication.
+- Operating cost: **weak** — recurring provider fees scale with connections and messages.
+- Operational burden: **strong** — the provider owns connection capacity and reconnect.
+- Vendor independence: **weak** — delivery is coupled to the provider's API, pricing, and availability.
+- Availability during event hours: **partial** — the provider's SLA helps, but its outages are outside the project's control.
+- Downstream design burden: **partial** — the store needs publication reconciliation (what is committed versus what is published); delivery wraps the provider; browsers use the provider's subscription model.
+
+*Summary:* fewest connection operations and quickest to low latency, paid for in recurring fees and provider coupling.
+
+## Selection
+
+**Self-hosted WebSockets.** It is the only route that is strong on both vendor independence and update freshness — the two criteria the project weighs most — and it does so at a connection-operation cost the project is willing to carry. Polling is strong on operational burden and downstream simplicity but repeats reads and adds seconds of lag for a freshness target the project would rather over-satisfy. Hosted delivery would remove connection operations entirely, but only by coupling the core update path to a provider's fees and availability, which the project declines.
+
+The decision honors the standing tenet that self-hosted and managed infrastructure are both permitted, and turns on the project's preference for infrastructure independence and low-latency updates.
+
+**Implications.** The change store must keep replayable revisions and a reliable publication path so a reconnecting browser can catch up. Delivery owns socket sessions, connection capacity, and reconnect handling. Browser sync owns the subscription, reconnect, and catch-up behavior against the last revision the browser saw. The choice forecloses the stateless-delivery simplicity of polling and accepts ongoing connection operations; moving to a hosted provider later means re-opening this decision.
+
+---
+
+One thing this surfaced: the Selection turns on a preference for infrastructure independence, but the HLD's tenets don't yet state one — the nearest, "Self-hosted and managed infrastructure are both permitted," is neutral. The decision-doc form expects a decision that turns on a criterion with tenet weight to name the tenet. Want me to add a one-line tenet (e.g. *"Prefer infrastructure the project controls over vendor-coupled services for the core update path"*) so the doc can name it — or keep the independence rationale confined to this decision?
+
+Approve the decision doc as written (and the HLD with it), or send numbered feedback. Then we'll start the three nodes.

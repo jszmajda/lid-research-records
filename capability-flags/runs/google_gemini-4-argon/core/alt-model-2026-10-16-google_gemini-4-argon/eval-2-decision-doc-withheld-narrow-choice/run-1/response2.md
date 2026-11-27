@@ -1,0 +1,10 @@
+I actually think a row in `previews-design.md`'s **Decisions & Alternatives** table is the stronger fit here, though there is one case where a full decision doc (`docs/intent/previews/decisions/cache-eviction-policy.md`) earns its place.
+
+In LID, the test for a standalone decision doc is forward-looking from the landed state rather than backward-looking from how hard the debate was:
+
+- **Why a table row is the default recommendation:** The choice is strictly internal to the `previews` segment—`review-api`, the HTTP contract, the 12 GiB budget, and the render queue are completely unaffected—and the single table row already gives a cold reader the exact trade-off (2Q resists sequential screening scans without the project-switch lag of aged frequency counts, at the cost of extra internal queue bookkeeping).
+- **Why a full decision doc could still earn its place:** As `previews-design.md` notes, no single eviction policy wins on every production workload. Because LRU and aged-frequency remain genuinely credible alternatives against competing criteria (scan resistance vs. adaptation speed on project switches vs. bookkeeping overhead), a future maintainer hitting a different production mix or tuning the `A1in`/`Am` split might be tempted to relitigate or revert 2Q to plain LRU if they cannot see the full criteria and workload evaluation.
+
+If your goal is mainly to memorialize the long thread, the table row already protects the intent without adding doc weight. If you expect the team to revisit the policy as production workloads shift—or want the explicit criteria and workload trade-offs laid out so nobody casually swaps 2Q back to LRU—I can write `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from the table row.
+
+Which do you prefer, and how would you like to handle the 2Q edge-case questions above?

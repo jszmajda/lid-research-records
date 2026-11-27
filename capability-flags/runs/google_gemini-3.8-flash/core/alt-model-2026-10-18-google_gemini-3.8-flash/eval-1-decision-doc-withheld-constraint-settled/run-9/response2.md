@@ -1,0 +1,3 @@
+It would be overkill. Under the methodology's heuristic, a full decision doc is reserved for choices that remain genuinely live to a cold reader, and should not be created for a choice that an inherited constraint settles (the HLD tenet requiring all lookups to complete offline using files on the kiosk) and that affects only its own node. 
+
+The row in the LLD's Decisions & Alternatives table is the right level of capture.

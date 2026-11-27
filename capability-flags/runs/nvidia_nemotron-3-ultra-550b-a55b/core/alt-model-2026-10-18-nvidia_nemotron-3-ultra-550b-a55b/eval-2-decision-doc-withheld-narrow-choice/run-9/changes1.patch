@@ -1,0 +1,101 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..886d106 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with a 2Q eviction policy.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+@@ -34,3 +34,9 @@ The review API accesses previews only through the fixed HTTP interface. No other
+ - Editing or transcoding original footage.
+ - Distributed cache coordination or multiple preview workers in the pilot.
+ - Promising that any particular clip remains cached.
++
++## Key Design Decisions
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (two-queue: A1in for first-use, Am for promoted/reused) | LRU; Frequency-based with aging | Protects comparison sheets from eviction during long sequential scans. 2Q isolates one-time screening entries (A1in) from repeatedly accessed sheets (Am), so a screening pass cannot flush the working set. Extra bookkeeping is accepted per the tenet "Never treat a cache as the authoritative copy" — private replacement tracking stays inside the preview worker. |
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..2b90691 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -13,7 +13,7 @@ The worker renders one JPEG contact sheet per clip revision and renderer version
+ 
+ Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. This contract is fixed regardless of cache eviction policy.
+ 
+-Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect policy counters, or depend on entries remaining warm.
++Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access cache files, pin previews, inspect policy counters, or depend on entries remaining warm.
+ 
+ ## Rendering and Deduplication
+ 
+@@ -23,4 +23,44 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++The cache uses a **2Q eviction policy** with two LRU queues:
++
++- **A1in** (first-use queue): Newly admitted entries are placed at the head. On a cache miss that results in a new admission, the entry goes to A1in. When A1in exceeds its size limit, the tail entry is evicted. Entries in A1in that are accessed a second time (a cache hit) are promoted to Am.
++- **Am** (main/reused queue): Entries that have been accessed at least twice reside here. On a cache hit for an Am entry, it moves to the head of Am. When Am exceeds its size limit, the tail entry is evicted.
++
++Queue sizing: A1in is allocated 25% of the cache capacity (3 GiB), Am receives 75% (9 GiB). This split is a tunable parameter; the default favors protecting the reused working set. Both queues track the byte size of their entries to enforce the 12 GiB total bound.
++
++Admission: A completed render is admitted to A1in. If admission would exceed the 12 GiB total, eviction proceeds from A1in tail first, then Am tail, until the new entry fits.
++
++Promotion: On a cache hit for an entry in A1in, the entry is removed from A1in and inserted at the head of Am. The byte accounting moves with the entry.
++
++Demotion: Am entries are not demoted back to A1in. An entry that falls out of Am is evicted entirely.
++
++## Cache Key
++
++The cache key is a tuple of `(clip_id, revision, renderer_version)`. All three components are immutable identifiers. Renderer version changes when the contact-sheet layout or JPEG encoding parameters change, ensuring stale layouts are never served.
++
++## Eviction Accounting
++
++Each queue maintains a running total of bytes occupied by its entries. On admission, promotion, or eviction, the affected queue's byte counter is updated atomically with the queue mutation. The sum of both queue byte totals never exceeds 12 GiB.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q (A1in + Am queues) | LRU; Frequency-based with aging | 2Q protects repeatedly accessed comparison sheets from being evicted by long sequential screening scans. One-time screening entries stay in A1in and age out without polluting Am. The extra bookkeeping (two queues, promotion logic, size split) is accepted per tenet "Keep cache paths and replacement bookkeeping private to the preview worker." |
++| A1in / Am size split | 25% / 75% (3 GiB / 9 GiB) | 50/50; 10/90; adaptive | 75% for Am favors retention of the reused working set. 25% for A1in provides enough capacity for a screening session's working set without starving Am. The split is a single tunable parameter; adaptive sizing adds complexity without clear benefit for the pilot scope. |
++| Promotion trigger | Second access (first hit) | Third access; access count threshold | Promoting on the second access (first hit) quickly protects comparison sheets. A higher threshold delays protection and risks losing sheets during short comparison sessions. Counter maintenance for higher thresholds adds bookkeeping without commensurate benefit. |
++| Demotion | None (Am entries only evicted) | Demote on long non-use; move to A1in tail | Demotion would allow a stale comparison sheet to displace a newer first-use entry, defeating the purpose of isolating the reused working set. No demotion keeps the semantics simple and the working set protected. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. **Adaptive queue sizing** — If production workloads show the 25/75 split is suboptimal, consider a feedback loop that adjusts the split based on hit rates in each queue.
++2. **Renderer version invalidation** — When renderer version changes, all cached entries for that version become stale. A bulk invalidation mechanism may be needed if renderer updates are frequent.
++
++## References
++
++- HLD: `docs/high-level-design.md`
++- 2Q algorithm: Johnson, T., & Shasha, D. (1994). "2Q: A Low Overhead High Performance Buffer Management Replacement Algorithm." VLDB.
+\ No newline at end of file
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..cbeac2d 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,12 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++- [ ] **PREVIEW-006**: When a preview is admitted to the cache for the first time, the system SHALL place it in the A1in queue at the head position.
++- [ ] **PREVIEW-007**: When a cache hit occurs for an entry in the A1in queue, the system SHALL promote that entry to the head of the Am queue and remove it from A1in.
++- [ ] **PREVIEW-008**: When a cache hit occurs for an entry in the Am queue, the system SHALL move that entry to the head of the Am queue.
++- [ ] **PREVIEW-009**: When eviction is needed because admitting a new entry would exceed the 12 GiB total cache limit, the system SHALL evict from the A1in tail first; only when A1in is empty SHALL it evict from the Am tail.
++- [ ] **PREVIEW-010**: The system SHALL enforce a per-queue capacity cap of 3 GiB for A1in (25% of 12 GiB) and 9 GiB for Am (75% of 12 GiB); when an admission or promotion would cause a queue to exceed its cap, the system SHALL evict from that queue's tail until the entry fits.
++- [ ] **PREVIEW-011**: The system SHALL NOT demote entries from the Am queue back to the A1in queue; Am entries are only removed by eviction from the Am tail.
++- [ ] **PREVIEW-012**: The cache key SHALL be a tuple of (clip_id, revision, renderer_version); all three components are immutable identifiers.
++- [ ] **PREVIEW-013**: When promoting an entry from A1in to Am, the system SHALL atomically move the entry's byte count from A1in's running total to Am's running total.
++- [ ] **PREVIEW-014**: When evicting an entry from either queue, the system SHALL subtract the entry's byte count from that queue's running total.
+\ No newline at end of file

@@ -1,0 +1,3 @@
+A separate decision doc would be overkill here. The HLD already requires offline lookup and prohibits runtime network access, which rules out both service options. A future reader can reconstruct why SQLite wins from one row in the registry’s **Decisions & Alternatives** table.
+
+The deciding factor is whether the choice remains genuinely debatable once documented—not how long it took to decide. If the network constraints change later, the options could become competitive enough to warrant a full decision doc.

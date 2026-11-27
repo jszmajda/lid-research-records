@@ -1,0 +1,10 @@
+My recommendation is no: keep the Decisions & Alternatives row. A full decision doc doesn't clear the bar here, though it's your call.
+
+- **The test is the landed state, not the debate.** The question is whether a cold reader would be tempted to reverse the choice without the competing options in front of them. Three meetings and 180 messages don't count toward that.
+- **The row already carries the alternatives.** It names LRU and aged frequency, and the trade-off against each. A reader who wonders "why not LRU?" gets the answer in one line.
+- **The choice is contained.** It affects only the preview worker's private replacement tracking. The interface, render queue, disk budget, and the review API are unchanged, and no other node is sized around it. Decision docs are meant for choices other design nodes are about to be built around.
+- **The remaining live part is tuning, not policy.** That is the probation budget and ghost list size, and a doc wouldn't settle them. It would only restate them.
+
+The one thing a doc would add is criteria for revisiting the choice: what workload evidence would make 2Q the wrong call. The context section already says the mix of screening and comparison varies by production. I'd capture that as a short "revisit when" line in the Open Questions section, for example "if probation hit rates stay near zero, or editors mostly switch projects rather than scan, reconsider LRU". That's cheaper than a standalone doc and sits where the tuning knobs are.
+
+If you still want the full doc, I'll write it at `docs/intent/previews/decisions/` and link it from the Decisions row. It would hold the context, the criteria (scan resistance, bookkeeping cost, adaptation on project switch), the three options with a fit verdict for each, and the revisit conditions. Which do you want: the revisit line only, or the full doc?

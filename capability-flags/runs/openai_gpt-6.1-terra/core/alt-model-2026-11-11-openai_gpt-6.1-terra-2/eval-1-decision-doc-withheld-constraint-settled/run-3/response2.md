@@ -1,0 +1,3 @@
+A standalone decision doc would be overkill. The choice is internal to the registry, and the existing offline constraint rules out the network-backed options during normal operation. A **Decisions & Alternatives row** in the registry design can capture the choice and rationale.
+
+Do you approve the high-level design so I can proceed? Also, should future tradeoffs generally favor robust recovery over less per-kiosk maintenance, or be decided case by case?

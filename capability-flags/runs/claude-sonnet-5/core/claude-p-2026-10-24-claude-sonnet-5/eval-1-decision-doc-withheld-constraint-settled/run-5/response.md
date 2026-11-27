@@ -1,0 +1,7 @@
+1. **Rebuild failure mid-build** (disk full, corrupt source record) — does the partially-built new database file get cleaned up, and does the kiosk retry automatically or require a new USB snapshot?
+2. **Crash during the atomic swap** — if the kiosk loses power between writing the new database and completing the rename, does startup detect a stale/missing active database and fall back cleanly, or could it find neither file?
+3. **Concurrent lookups during rebuild** — the old database stays active and queryable while the new one builds in a separate file, so in-flight lookups should never block or see partial data; is that worth stating explicitly as an invariant?
+4. **Stale file accumulation** — over many snapshot cycles, is the old database file deleted right after a successful swap, or could multiple generations pile up on kiosk disk?
+5. **SQLite file location and permissions** — same volume as the USB import staging area, or a separate kiosk-local path? Matters for whether the rename is guaranteed atomic (same-filesystem rename) versus a cross-filesystem copy that could fail partway.
+
+Which of these should I fold into the LLD now, and which (if any) should become deferred open questions?

@@ -1,0 +1,11 @@
+I’d recommend **keeping it as the `Decisions & Alternatives` row in `previews-design.md`** rather than writing a standalone decision doc.
+
+Here’s why:
+
+1. **Judge from the landed design forward, not from how painful the debate was.** A decision doc has two jobs: structuring an open argument while it’s live, or giving a future cold reader enough machinery to re-run a load-bearing judgment. The debate is already settled, and a long thread is a history of how hard it was to agree—not proof that a future reader needs a separate document.
+2. **Nothing outside `previews` leans on this choice.** The HLD boundary, `review-api`, the `{200, 202, 404}` HTTP contract, the four-job render queue, and the 12 GiB ceiling are identical across LRU, aged frequency, and 2Q. Because no other component is sized around 2Q, changing replacement logic later stays strictly inside the preview worker’s private cache rather than rippling across the architecture.
+3. **One table row already settles a cold reader’s “why not plain LRU?” question.** A cold reader seeing 2Q will wonder why the worker carries two queues instead of simple LRU; the row in `previews-design.md` already records the exact trade (scan resistance during long screenings without aged-frequency lag on project switches, at the cost of two queues and a split to tune) without adding another file that can drift from the LLD.
+
+**The one reason to override that:** if you genuinely expect the team to re-litigate 2Q vs. LRU/aged-frequency the first time you tune the queue split in pilot—and want the criteria and per-option analysis written down cold so nobody restarts that 180-message thread—I can draft `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from `previews-design.md`, with the tradeoff that you’re carrying an extra doc for a node-local policy.
+
+Want to stick with the table row (my recommendation), or would you still like me to draft the decision doc? And whenever you're ready, let me know how you'd like to handle the Phase 2 questions (1–6 above) before we move to Phase 3 (`previews-specs.md`).

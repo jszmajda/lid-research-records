@@ -1,0 +1,184 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..27b6fb6 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, a local embedded SQLite index rebuilt from each snapshot, and lookup.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..b90cf42 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -5,20 +5,162 @@ prefix: REG
+ 
+ # Registry Design
+ 
+-## Context
++## Context and Design Philosophy
+ 
+ Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
+ 
++Kiosks sit inside an isolated production area with no route to the lab network. The registry therefore treats a snapshot as the only source of truth: every record a kiosk can answer about comes from a snapshot it has validated itself. Validation, indexing, and lookup are one component's responsibility, so that a technician sees the same lookup behavior regardless of what the snapshot contains, and so that no other component has to reason about registry storage.
++
++The registry never edits inventory. Corrections and new snapshots come from the central inventory team as new signed snapshots.
++
+ ## Architecture
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++The lookup backend is a local embedded SQLite index: one database file per active snapshot, held on the kiosk's own filesystem and rebuilt from each incoming snapshot. Nothing about the backend leaks past `findBySerial` — the certificates node cannot tell, and does not need to know, how records are stored or indexed.
++
++Snapshot validation, index preparation, and lookup all belong to this node.
++
++## Snapshot Format
++
++A snapshot is a set of files on approved USB media:
++
++- **Records file** — newline-delimited JSON. One object per line, one record per line. Each record carries a serial number, an equipment description, a calibration date, and a due date. Dates are ISO-8601 calendar dates (`YYYY-MM-DD`).
++- **Manifest** — the snapshot date, the schema version, the record count, the SHA-256 digest of the records file, and the signature over those four values.
++
++The signature is computed over the canonical UTF-8 JSON serialization of the manifest's four signed values — `snapshot_date`, `schema_version`, `record_count`, `records_digest` — with no insignificant whitespace and with the digest rendered as lowercase hexadecimal. The signature is stored alongside the signed values rather than inside them.
++
++Serial numbers are opaque strings. Punctuation in a serial number is significant and is never removed or rewritten. Only surrounding whitespace and ASCII letter case are normalized (see *Lookup Behavior*). No Unicode normalization is applied: a serial written with a precomposed character and the same serial written with a combining sequence are different serials.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++An import is all-or-nothing. The steps are:
++
++1. **Verify the signature** over the manifest using the bundled public key. A missing, unreadable, or invalid signature rejects the import.
++2. **Check the schema version** against the versions this build supports. An unsupported version rejects the import.
++3. **Verify the records digest** — recompute the SHA-256 digest of the records file and compare it with the signed digest. A mismatch rejects the import, and no record content is parsed.
++4. **Build a candidate index** in a fixed candidate path inside the registry's index directory, which is on the same filesystem as the active index. Parse the records file line by line; a malformed line, a missing or unusable field, or a duplicate serial number rejects the import. Serial numbers are stored in normalized form, so duplicates are detected across ASCII case and whitespace differences.
++5. **Verify the candidate index** — the stored record count must equal the manifest's record count, and the file must pass an integrity check.
++6. **Activate** the candidate by renaming it over the active index path. The rename replaces the old directory entry, so the superseded index is gone once the rename completes.
++
++Every failure before step 6 discards the candidate file, leaves the active index untouched, and reports a useful error. A failed import therefore leaves the last valid snapshot in service. A build that runs out of disk space part-way through is treated the same way: the candidate is discarded and the active index is untouched.
++
++The manifest and the records file are read in place from the USB media and are never copied onto the kiosk. Only the index is retained.
++
++The snapshot date travels inside the index file (see *Local Index*), so activation is a single rename — there is no second file to keep in step with the first.
++
++Because the rename replaces a directory entry, a reader that already holds the previous file keeps reading it until it closes. Activation therefore closes the registry's read connection and opens the new one before activation reports success. A lookup already in flight when activation begins completes against the previous index and returns the previous snapshot's date; every lookup that starts after activation completes is served from the new index.
++
++Whether a validly signed snapshot that is older than the active snapshot may replace it is an open question (see *Open Questions & Future Decisions*); until it is settled, activation is unconditional.
++
++## Local Index
++
++The active index is a single SQLite database file in the registry's index directory, opened read-only by lookups.
++
++```sql
++CREATE TABLE records (
++  serial           TEXT PRIMARY KEY NOT NULL,
++  description      TEXT NOT NULL,
++  calibration_date TEXT NOT NULL,
++  due_date         TEXT NOT NULL
++);
++
++CREATE TABLE metadata (
++  key   TEXT PRIMARY KEY NOT NULL,
++  value TEXT NOT NULL
++);
++```
++
++- `records.serial` holds the normalized serial number. The primary key enforces serial uniqueness inside the index.
++- `metadata` holds `snapshot_date`, `snapshot_schema_version`, and `record_count` for the snapshot the index was built from. Reading the snapshot date from the index guarantees that the date a technician sees belongs to the records being served. `snapshot_schema_version` records the version of the snapshot record schema, not the version of this table layout.
++- Serial comparisons use SQLite's default binary collation. Normalization is applied by the registry before the query, so no case-insensitive comparison is used at the database level; punctuation therefore stays significant end to end.
++- Dates are stored as ISO-8601 text, which sorts and compares as calendar dates.
++
++The candidate database is built and closed without write-ahead log sidecar files, so the finished file is self-contained and can be renamed as a unit. Lookups never write to the active index.
++
++The registry serves the active index only if its recorded `snapshot_schema_version` is one this build supports. An index whose version is unknown to the running build is an operational fault, not an empty result.
++
++The registry assumes kiosks run Linux, whose rename replaces the target atomically.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++1. **Normalize** the entered serial: remove surrounding ASCII whitespace (space, tab, carriage return, line feed) and uppercase ASCII letters `A`–`Z`. Other characters, including punctuation, non-ASCII whitespace, and non-ASCII letters, are left exactly as entered.
++2. **Query** the active index for the normalized serial.
++3. **Return** `Found(record, snapshotDate)` with the record fields and the snapshot date from the index metadata, or `NotFound(snapshotDate)` when the index holds no such serial. The snapshot date is returned in both cases.
++
++A serial that is empty after normalization matches nothing, because a record whose serial is empty after normalization is rejected at import. The result is `NotFound` with the snapshot date.
++
++A lookup that cannot be served — there is no active index yet, or the active index is missing, unreadable, or carries an unsupported schema version — is an operational fault of the registry, not a `NotFound`. A `NotFound` means only that the active snapshot does not contain the serial.
++
++## Record Validation
++
++A record is usable only if every field is present and well formed:
++
++- **Serial** — present, and non-empty after normalization.
++- **Description** — present and non-empty.
++- **Calibration date and due date** — present and valid ISO-8601 calendar dates (`YYYY-MM-DD`, and a real date on the calendar, so `2024-02-30` is rejected).
++- **Unknown fields** — ignored, not a rejection reason.
++
++A due date earlier than the calibration date is accepted as recorded. The registry reports the data as the snapshot carries it; the certificates node decides what to warn about.
++
++The records file is read line by line. A trailing newline terminates the last record and is not a line of its own; a blank line anywhere else is malformed. A carriage return immediately before a line terminator is stripped before the line is parsed.
++
++## Import Failures
++
++Every rejected import reports one failure with a machine-readable reason and a human-readable message. The reasons are:
++
++| Reason | Meaning |
++|---|---|
++| `invalid-signature` | The manifest signature did not verify. |
++| `unsupported-schema-version` | The snapshot schema version is not supported by this build. |
++| `digest-mismatch` | The records file did not match the signed digest. |
++| `malformed-record` | A line was not a valid record, or a field was missing or unusable. |
++| `duplicate-serial` | Two records normalize to the same serial. |
++| `record-count-mismatch` | The index holds a different number of records than the manifest declares. |
++| `integrity-check-failed` | The built index did not pass its integrity check. |
++| `insufficient-space` | The kiosk ran out of space while building the candidate index. |
++| `busy` | An import is already running. |
++
++`insufficient-space` is deliberately distinct from the reasons that describe a bad snapshot, so that an operator can tell a faulty medium from a full kiosk disk.
++
++## Concurrency, Startup, and Durability
++
++- One import runs at a time. A second import request while an import is running is rejected with `busy`.
++- Lookups during an import are served from the active index; the candidate index is not visible to lookups until activation.
++- Activation is serialized with lookups: the registry closes the read connection, renames, and opens the new connection before reporting success.
++- The registry stores no state outside the index file and its configuration. The active snapshot date, schema version, and record count are recoverable from the index itself.
++- At startup, the registry removes any leftover candidate file and verifies the integrity of the active index. A candidate left behind by a power loss is never activated, and it never accumulates across imports because the candidate path is fixed.
++- The active index's integrity is verified at startup and after each activation. The lookup path trusts the file and does not re-check it per lookup, which keeps lookups inside the 250 ms target.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index on each kiosk | On-site HTTPS directory; managed search service | Kiosks have no runtime network access, so a network backend would either violate that constraint or turn the lab network into a dependency of every lookup. The on-site directory also pushes index maintenance to a service the registry would then have to health-check and time out; the managed search service adds recurring cost, credential handling, and external connectivity to a component whose whole point is working on an isolated island. A local index keeps validation, rebuild, and lookup inside this node. |
++| Index rebuild strategy | Full rebuild of a candidate database per snapshot, activated by rename | Update the active database in place; apply only changed records against the existing index | A full rebuild gives an all-or-nothing activation and keeps the previous snapshot intact on failure. In-place updates risk exposing a half-written snapshot and complicate rollback. Incremental application would need a delta format that signed snapshots do not carry. |
++| Snapshot metadata location | Metadata table inside the index file | Separate sidecar metadata file beside the index | One rename then activates records and snapshot date together. A sidecar file would need its own atomicity story and can drift from the database it describes. |
++| Storage shape of the index | One self-contained database file, built and closed without write-ahead log sidecars | Keep the database in WAL mode while building | WAL leaves `-wal` and `-shm` sidecar files that do not travel with a renamed database file. Closing a checkpointed database keeps the index a single file that renames atomically. |
++| Retained snapshot artifacts | Index only; the manifest and records file are read from USB media in place and not copied | Keep the signed snapshot and manifest alongside the index on the kiosk | Kiosk storage is limited and the index already carries every record plus the snapshot date. A snapshot can always be re-imported from USB media. |
++| Normalized serial storage | Store normalized serials in the index; compare at query time only | Store serials as received; normalize in the query | Normalizing once at build time makes the uniqueness check exact and lets the lookup path stay a single indexed equality match. Storing raw serials would leave uniqueness dependent on the collation chosen for the comparison. |
++| Scope of normalization | ASCII whitespace and ASCII letter case only; no Unicode normalization or case folding | Unicode whitespace trimming and Unicode case folding | The rule stays predictable and reversible with respect to the record data, and punctuation and non-ASCII characters remain exactly as the inventory team recorded them. The cost is that a serial pasted with a non-breaking space does not match; the kiosk input surface can trim that before calling the registry. |
++| Signature and digest form | SHA-256 digest over the raw bytes of the records file; signature over canonical JSON of the manifest's signed values | Signing a serialized manifest file; other digest algorithms | A digest over raw bytes detects any change to the records file, including a same-record-count substitution. Canonical JSON over named values keeps the signed content independent of the manifest file's formatting. SHA-256 is available in the kiosk's standard library. |
++| Integrity checking | At startup and after each activation | On every lookup | A per-lookup integrity check would run against the whole index on each query and break the 250 ms lookup target. Verifying at startup and after activation localizes a corrupted index to the moment it could have been introduced. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ The lookup backend is a local embedded SQLite index, decided after comparing a local embedded index, an on-site HTTPS directory, and a managed search service.
++2. ✅ The index is rebuilt in full from each snapshot and activated atomically by rename.
++
++### Deferred
++
++1. Whether `findBySerial` gains an explicit failure variant, so that an unreadable index or a kiosk that has never imported a snapshot is reported to the certificates node as a fault rather than only as an error raised beside the interface. This touches the certificates node's use of the result type.
++2. Whether a validly signed snapshot whose date is older than the active snapshot may replace it. The costs cut both ways: refusing older snapshots protects a kiosk from an accidental rollback onto stale calibration data, but it also refuses a deliberate re-import of an earlier snapshot, and the snapshot date's granularity is a day, so same-day replacements need their own rule.
++3. The time budget for importing a snapshot of up to 150 MB. The rebuild happens on the kiosk, on the import path, and no target for import duration has been set.
++4. Whether kiosk operators need feedback during a long import, and what that feedback is. The kiosk interface is not specified in this node.
++
++## References
++
++- `docs/high-level-design.md` — project-level approach and tenets.
++- `docs/intent/certificates/certificates-design.md` — the consumer of `findBySerial`.

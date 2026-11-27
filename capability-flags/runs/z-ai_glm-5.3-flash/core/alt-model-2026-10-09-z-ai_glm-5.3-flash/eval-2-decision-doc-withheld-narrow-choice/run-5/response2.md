@@ -1,0 +1,3 @@
+Yes — with one honest caveat. My original rule says a decision affecting only its own node usually doesn't earn a doc, and this one is confined to the preview worker. What tips it over the line for me: the A1/A2 split stays genuinely live — it gets re-tuned against pilot workloads, and a cold reader re-litigating "why 2Q, why 4/8" would need the three options and criteria written down, not just the table row's one-line rationale.
+
+So: yes, write it. It will go in `docs/intent/previews/decisions/`, link from the Decisions row, carry no EARS IDs. Shall I draft it now, before the Phase 3 spec work, or bundle it with the next stop?

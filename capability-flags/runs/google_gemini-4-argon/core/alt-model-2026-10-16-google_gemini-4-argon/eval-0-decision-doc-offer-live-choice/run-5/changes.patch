@@ -1,0 +1,115 @@
+diff --git a/docs/decisions/change-delivery-approach.md b/docs/decisions/change-delivery-approach.md
+new file mode 100644
+index 0000000..36c3de1
+--- /dev/null
++++ b/docs/decisions/change-delivery-approach.md
+@@ -0,0 +1,71 @@
++---
++node: high-level-design
++---
++
++# Decision: Change Delivery Approach
++
++## Context
++
++MarketBoard keeps one authoritative board per event for up to 40 weekend markets, serving roughly 120 coordinators and up to 800 simultaneous staff browsers. A busy market has 10-25 active editors and averages two status changes per minute, with opening-time bursts of up to 20 edits per second. Connected browsers must display committed changes within 15 seconds under normal connectivity and recover the latest board after disconnects lasting up to 20 minutes.
++
++While editors submit commands over HTTPS, the mechanism for delivering committed revisions to connected browsers determines the architecture of three coupled components:
++
++- **Change store** (`change-store`): how revisions are indexed, queried for catch-up, and published upon commit.
++- **Delivery** (`delivery`): whether the server responds to stateless cursor requests, manages stateful socket sessions, or forwards updates to an external provider.
++- **Browser sync** (`browser-sync`): how clients subscribe to updates, detect connectivity loss, and reconcile missed revisions upon reconnect.
++
++## Decision Elements
++
++### Weighted Criteria
++
++- **Update latency and read efficiency (major)** — All candidate approaches meet the 15-second freshness goal, but fast propagation during opening-time bursts (up to 20 edits per second across 800 browsers) keeps coordinators from acting on stale stall statuses without generating high repeated read load against the change store.
++- **Vendor independence and recurring cost control (major)** — Grounded in the tenet *Prefer owning operational complexity in self-hosted infrastructure over coupling core workflows to third-party vendors*. MarketBoard runs across 40 weekend markets with peak concurrent connection counts; avoiding per-connection or per-message vendor billing and external provider lock-in keeps the core board delivery path self-contained.
++- **Server and client operational simplicity (moderate)** — Simpler connection management, stateless request handling, and smaller reconnect state machines reduce implementation and operational overhead across `change-store`, `delivery`, and `browser-sync`.
++- **Disconnect visibility and deterministic catch-up (moderate)** — Grounded in the tenets *A committed edit has one authoritative event revision regardless of its delivery route* and *Connectivity failures must be visible, not mistaken for an unchanged board*. The transport must make connection loss detectable to the browser and support deterministic catch-up across disconnects up to 20 minutes.
++
++## Options in the Domain
++
++### Five-Second HTTPS Polling
++
++Browsers run a periodic timer that issues an HTTPS GET request every five seconds carrying the event ID and the highest revision number the browser has applied (`?sinceRevision=N`). The delivery service queries the change store by `(event_id, revision > N)` and returns any committed revisions in order.
++
++- **Update latency and read efficiency**: **weak** — Introduces up to five seconds of polling delay plus request round-trip latency on calm boards, and 800 connected browsers generate ~160 requests per second against the delivery tier and change store even when no edits are occurring.
++- **Vendor independence and recurring cost control**: **strong** — Uses standard self-hosted HTTPS request handling with no external realtime provider, credentials, or per-connection fees.
++- **Server and client operational simplicity**: **strong** — Delivery remains stateless request/response, the change store only needs an indexed revision cursor query, and browsers run a simple polling loop without persistent session state.
++- **Disconnect visibility and deterministic catch-up**: **strong** — Failed HTTP polls immediately surface connectivity loss after a missed interval, and catch-up after a disconnect uses the exact same `sinceRevision` query path as normal operation.
++
++Summary: Simplest stateless operation across all three components, at the cost of multi-second update lag and continuous baseline read traffic from idle browsers.
++
++### Self-Hosted WebSockets
++
++Browsers establish a persistent WebSocket connection to the MarketBoard delivery service and subscribe to an event starting from their last known revision. When a command commits, the change store records the authoritative revision and publishes it to the delivery tier, which pushes the update to subscribed socket sessions. On reconnect, browsers present their last applied revision so delivery and the change store can replay missed revisions before resuming live streaming.
++
++- **Update latency and read efficiency**: **strong** — Pushes committed revisions immediately over open sockets with subsecond latency and eliminates repeated polling reads when boards are quiet.
++- **Vendor independence and recurring cost control**: **strong** — Runs entirely on MarketBoard's own infrastructure without third-party realtime vendor contracts, SDK coupling, or usage-based connection fees.
++- **Server and client operational simplicity**: **weak** — Requires the delivery service to manage up to 800 concurrent socket sessions, heartbeats, and fan-out; requires the change store to support both reliable commit publication and replayable revision ranges; and requires browser sync to manage socket lifecycle, reconnect backoff, and gap-free transition between replay and live stream.
++- **Disconnect visibility and deterministic catch-up**: **strong** — Socket close events and missed heartbeats make connectivity loss explicit to the browser, and revision-numbered replay from the change store guarantees deterministic recovery up to the 20-minute disconnect window.
++
++Summary: Delivers immediate updates without external vendor coupling or recurring fees, trading away stateless simplicity in favor of owning socket lifecycle and replay operations.
++
++### Hosted Realtime Service
++
++Browsers connect to a managed third-party realtime provider using short-lived subscription tokens minted by MarketBoard's delivery service. When an edit commits in the change store, the delivery service publishes the new revision to the provider's API, which handles socket fan-out, connection scaling, and client subscription channels.
++
++- **Update latency and read efficiency**: **strong** — Pushes updates with low latency and offloads persistent connection fan-out from MarketBoard servers.
++- **Vendor independence and recurring cost control**: **weak** — Couples `delivery` and `browser-sync` to a third-party provider's channel model, credentials, and availability, and incurs recurring fees scaled by concurrent weekend connections and burst message volume.
++- **Server and client operational simplicity**: **partial** — Offloads WebSocket connection capacity and heartbeat management to the vendor, but introduces an external publication boundary requiring outbox reconciliation in `change-store`/`delivery` to handle cases where a database commit succeeds but provider publication fails.
++- **Disconnect visibility and deterministic catch-up**: **partial** — Provider SDKs expose connection states and short-window message history, but guaranteeing authoritative 20-minute revision recovery still requires coordinating provider channel resumption with MarketBoard's own change store.
++
++Summary: Offloads socket capacity management for fast updates, but introduces recurring vendor costs, provider coupling, and split-brain publication reconciliation between the database and the external service.
++
++## Selection
++
++**Self-Hosted WebSockets** is selected.
++
++Both self-hosted WebSockets and a hosted realtime service provide immediate push updates (**Update latency and read efficiency**, major), avoiding the multi-second lag and continuous idle read load of five-second HTTPS polling. Between the two push options, the decision turns on the tenet *Prefer owning operational complexity in self-hosted infrastructure over coupling core workflows to third-party vendors* (**Vendor independence and recurring cost control**, major): self-hosted WebSockets keep the entire commit-to-browser pipeline inside MarketBoard without recurring realtime vendor bills, external credential management, or cross-vendor publication failure modes, at the accepted cost of lower **Server and client operational simplicity** (moderate).
++
++Committing to self-hosted WebSockets forecloses a purely stateless delivery tier and obligates the three downstream components as follows:
++
++- `change-store` must persist monotonically increasing per-event revisions, retain history for at least seven days (satisfying both operational investigation and the 20-minute reconnect replay window), and reliably publish committed revisions to `delivery`.
++- `delivery` must authenticate and manage up to 800 concurrent WebSocket sessions, track per-event subscriptions, detect dead connections via heartbeats, and coordinate revision replay with live fan-out.
++- `browser-sync` must maintain the WebSocket subscription, surface connection loss to the coordinator when the socket drops or heartbeats fail (satisfying the tenet *Connectivity failures must be visible, not mistaken for an unchanged board*), and execute reconnect with revision catch-up.
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 34ebfe7..4acbc45 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -6,22 +6,23 @@ Forty weekend markets currently relay stall closures, late arrivals, and power p
+ 
+ ## Approach
+ 
+-Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board. The approach for delivering committed changes is still open: five-second HTTPS polling, self-hosted WebSockets, or a hosted realtime service. All three can meet the required freshness target. Subsecond updates would be useful, but are not required.
++Keep one authoritative board per event. Editors submit commands over HTTPS; browsers display a revisioned view of the board and receive committed changes over self-hosted WebSockets.
+ 
+-Delivery, change storage, and browser recovery must be designed together after this choice. Polling would favor cursor queries; self-hosted sockets would need connection management and replay; hosted delivery would need publication reconciliation and provider credentials. Neither operating cost nor minimum operational burden has been declared the overriding criterion.
++Delivery, change storage, and browser recovery work together around this WebSocket pipeline: the change store records replayable event revisions and reliably publishes committed changes; the delivery service manages WebSocket sessions and streams revision updates to subscribed browsers; and browser sync maintains the connection, detects disconnects, and catches up from missed revisions on reconnect.
+ 
+ ## Architecture
+ 
+ - Access: `docs/intent/access/access-design.md`, with `docs/intent/access/access-specs.md`. Written below the stable HTTPS command boundary.
+-- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Revision history, read indexes, and any publication outbox depend on the delivery approach.
+-- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Owns polling responses, socket sessions, or hosted publication, depending on the approach.
+-- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Its subscription, reconnect, and catch-up behavior depend on the approach.
++- Change store: `docs/intent/change-store/change-store-design.md`, with `docs/intent/change-store/change-store-specs.md`. Not written yet. Owns revision history, replayable revision queries, and reliable publication of committed changes to delivery.
++- Delivery: `docs/intent/delivery/delivery-design.md`, with `docs/intent/delivery/delivery-specs.md`. Not written yet. Owns self-hosted WebSocket sessions, event subscriptions, and streaming committed revisions to connected browsers.
++- Browser sync: `docs/intent/browser-sync/browser-sync-design.md`, with `docs/intent/browser-sync/browser-sync-specs.md`. Not written yet. Owns WebSocket subscription lifecycle, disconnect detection, reconnect, and revision catch-up.
+ 
+ ## Tenets
+ 
+ - A committed edit has one authoritative event revision regardless of its delivery route.
+ - Connectivity failures must be visible, not mistaken for an unchanged board.
+ - Commands use server-side authorization; browser state is not evidence of permission.
++- Prefer owning operational complexity in self-hosted infrastructure over coupling core workflows to third-party vendors.
+ - Self-hosted and managed infrastructure are both permitted. Event updates contain stall IDs and operational statuses, not customer records.
+ 
+ ## Goals
+@@ -41,3 +42,4 @@ Delivery, change storage, and browser recovery must be designed together after t
+ ## Key Design Decisions
+ 
+ - **Commands over HTTPS, one authoritative board per event.** Editors submit commands to the server, which assigns each committed edit one event revision. Peer-to-peer or browser-side merging was rejected: the tenets require one authoritative revision regardless of delivery route, and offline editing is a non-goal.
++- **Self-hosted WebSockets for change delivery** (`docs/decisions/change-delivery-approach.md`). Committed revisions are pushed to browsers over self-hosted WebSocket sessions, accepting connection-capacity and reconnect/replay operational work in exchange for low-latency updates without recurring realtime-vendor fees or provider lock-in. Five-second HTTPS polling and a hosted realtime service were rejected.

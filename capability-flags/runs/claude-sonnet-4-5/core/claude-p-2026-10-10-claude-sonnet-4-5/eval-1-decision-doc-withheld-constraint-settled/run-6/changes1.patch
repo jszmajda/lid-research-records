@@ -1,0 +1,89 @@
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..d2bee82 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -13,12 +13,79 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is a local embedded SQLite database. Each kiosk validates and builds its own index when a snapshot arrives.
+ 
+-## Snapshot Import
++### SQLite Schema
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Two tables support atomic snapshot replacement:
+ 
+-## Lookup Behavior
++```sql
++CREATE TABLE snapshots (
++  id INTEGER PRIMARY KEY,
++  snapshot_date TEXT NOT NULL,
++  active INTEGER NOT NULL DEFAULT 0
++);
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++CREATE TABLE records (
++  snapshot_id INTEGER NOT NULL,
++  serial TEXT NOT NULL,
++  calibration_date TEXT NOT NULL,
++  due_date TEXT NOT NULL,
++  description TEXT NOT NULL,
++  FOREIGN KEY (snapshot_id) REFERENCES snapshots(id)
++);
++
++CREATE INDEX idx_records_lookup ON records(snapshot_id, serial);
++```
++
++The `serial` column stores the normalized form (whitespace trimmed, ASCII uppercased). A single-field index on `(snapshot_id, serial)` supports both the active-snapshot filter and the serial lookup.
++
++### Snapshot Import
++
++1. **Signature verification**: Check the snapshot signature against a bundled Ed25519 public key embedded in the kiosk binary. Reject the import if verification fails.
++2. **Schema version check**: Accept only schema version `1`. Reject others as unsupported.
++3. **Record validation**: Parse each newline-delimited JSON record, normalize its serial number, and check for duplicates within the incoming snapshot. Reject if duplicates exist.
++4. **Index preparation**: Insert a new row into `snapshots` with `active = 0`. Insert all records with that snapshot ID into `records`. The new snapshot is queryable but not yet exposed.
++5. **Atomic activation**: Within a transaction, set `active = 1` for the new snapshot and `active = 0` for all prior snapshots. Lookups select only from the row where `active = 1`.
++6. **Cleanup**: After activation, delete rows from `snapshots` and `records` for snapshots older than the previous one (retain two: current and immediate predecessor for potential rollback).
++
++An import failure at any step leaves the previous snapshot active and returns a useful error message identifying the validation failure.
++
++### Lookup Behavior
++
++Normalize the input serial number (trim whitespace, uppercase ASCII letters). Punctuation remains significant. Query:
++
++```sql
++SELECT r.calibration_date, r.due_date, r.description, s.snapshot_date
++FROM records r
++JOIN snapshots s ON r.snapshot_id = s.id
++WHERE s.active = 1 AND r.serial = ?
++```
++
++Return `Found(record, snapshotDate)` if a row matches, or `NotFound(snapshotDate)` using the active snapshot's date if no match exists.
++
++### Database File Location
++
++The SQLite database file lives at `./data/registry.db` relative to the kiosk binary's working directory. The kiosk creates the file and schema on first launch if it does not exist. Snapshots imported afterward populate the tables.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory; Managed search service | Predictable lookups with no service dependency. Each kiosk validates and builds its own index when a snapshot arrives. All lookup stays inside the registry component. Trade-off: each kiosk rebuilds the index rather than receiving a pre-built one, but 90K records rebuild quickly enough and the HLD's 250ms lookup budget accommodates it. Avoids service timeout handling and external connectivity that the other options require. |
++| Signature algorithm | Ed25519 | RSA; ECDSA | Fast verification, small key size (32 bytes public key), widely supported, and resistant to timing attacks. The bundled public key fits easily in the kiosk binary. |
++| Schema version strategy | Reject unsupported versions | Auto-migrate; Warn and continue | Explicit rejection prevents schema mismatches from producing incorrect lookups or corrupting the index. The central inventory team controls snapshot schema versions and can coordinate kiosk updates when a version change is needed. |
++| Snapshot retention | Keep current + immediate predecessor | Keep all snapshots; Keep current only | Two snapshots allow quick rollback to the previous snapshot if a newly activated one reveals data issues in production. Deleting older snapshots keeps disk usage bounded. |
++| Serial normalization | Trim whitespace, uppercase ASCII | No normalization; Full Unicode normalization | Handles common technician input variations (leading/trailing spaces, lowercase) without adding Unicode complexity. Punctuation remains significant because some serial formats use hyphens or periods as meaningful delimiters. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ **Lookup backend choice** — Local SQLite index selected over HTTPS directory and managed search service.
++2. ✅ **Atomic activation mechanism** — Single `active` flag per snapshot, toggled in a transaction.
++
++### Deferred
++
++1. **Rollback interface** — If a technician discovers data errors after a snapshot activates, should the kiosk expose a UI control to roll back to the previous snapshot, or does rollback require reimporting the prior snapshot from USB? Deferred until user testing reveals whether manual rollback is needed.
++2. **Import progress indicator** — For large snapshots (up to 150 MB), should the kiosk show a progress bar during import, or is a blocking "Importing..." message sufficient? Depends on actual import duration on target hardware.

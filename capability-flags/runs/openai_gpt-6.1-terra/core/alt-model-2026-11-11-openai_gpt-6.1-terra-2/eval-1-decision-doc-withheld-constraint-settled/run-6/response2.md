@@ -1,0 +1,3 @@
+A standalone decision doc would be overkill. The choice is internal to the registry, and the existing offline requirement rules out both network-dependent alternatives. A row in the registry design’s **Decisions & Alternatives** table can capture the rationale: SQLite supports offline lookups without a service, at the cost of rebuilding the index on each kiosk.
+
+Does that approach sound right, and do you approve the HLD update so I can continue with the registry design?

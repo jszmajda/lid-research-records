@@ -1,0 +1,3 @@
+I’d recommend against a full decision doc. The choice is real, but it affects only the previews node — no sibling component, schema, or data migration is sized around it — and the LLD’s Decisions & Alternatives table already records 2Q against LRU and aged frequency with the rationale. Under the skill’s test, that earns a row, not a standalone doc; the three meetings don’t change the landed-state test.
+
+If what you want is to preserve the detailed comparison, I can expand the table row or add a short “eviction policy comparison” appendix inside the previews LLD. If you still want a full decision doc despite that, say so and I’ll write one.

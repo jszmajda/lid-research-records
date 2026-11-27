@@ -1,0 +1,106 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..ee6d945 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/decisions/cache-replacement-policy.md b/docs/intent/previews/decisions/cache-replacement-policy.md
+new file mode 100644
+index 0000000..e157e47
+--- /dev/null
++++ b/docs/intent/previews/decisions/cache-replacement-policy.md
+@@ -0,0 +1,55 @@
++---
++node: previews
++---
++
++# Decision: Preview Cache Replacement Policy
++
++## Context
++
++Editors alternate between long sequential screenings, which introduce many contact sheets that may be viewed only once, and comparison sessions, which repeatedly revisit a smaller working set. Cached sheets are inexpensive to replace relative to source footage but take about 450 ms to render, and the single preview worker has a fixed 12 GiB cache budget. The replacement policy must decide which sheets retain that budget without changing the preview API, render queue, or cache-miss semantics.
++
++## Decision Elements
++
++- **Protect demonstrated reuse during sequential scans (major).** A large screening should not displace the comparison sheets that editors have already revisited.
++- **Adapt after workload or project changes (moderate).** Sheets favored by an earlier editing session should yield cache space when the active working set changes.
++- **Limit operational complexity (moderate).** Replacement metadata and tuning should remain understandable within one worker and should not create avoidable maintenance work.
++
++The fixed API, 12 GiB byte limit, and worker-private replacement metadata are invariants shared by every option rather than selection criteria.
++
++## Options in the Domain
++
++### Global LRU
++
++**Description.** Keep all resident sheets in one recency-ordered queue. A hit moves its sheet to the most-recently-used position, and admission evicts from the least-recently-used end until enough bytes are available.
++
++**Analysis.**
++
++- **Weak fit, protect demonstrated reuse during sequential scans.** A screening that touches enough one-use sheets pushes previously reused comparison sheets to the eviction end of the same queue.
++- **Strong fit, adapt after workload or project changes.** A new stream of requests quickly replaces sheets from an inactive project.
++- **Strong fit, limit operational complexity.** One queue and one recency update rule minimize metadata and tuning.
++
++### Frequency-Based Eviction with Aging
++
++**Description.** Track access counts for resident sheets, evict lower-frequency entries first, and periodically age counts so historical popularity loses influence.
++
++**Analysis.**
++
++- **Strong fit, protect demonstrated reuse during sequential scans.** Repeatedly accessed comparison sheets accumulate enough frequency to outlast one-use screening sheets.
++- **Partial fit, adapt after workload or project changes.** Aging eventually removes old advantages, but the aging interval can retain yesterday's working set too long or erase useful frequency too quickly.
++- **Weak fit, limit operational complexity.** Counters, aging cadence, tie-breaking, and their interactions require ongoing maintenance and tuning.
++
++### Resident 2Q
++
++**Description.** Admit new sheets to a byte-bounded probationary FIFO. Promote a probationary sheet to a protected LRU when it is accessed again. Evict one-use screening sheets from the probationary queue in FIFO order and reused sheets from the protected queue in LRU order. The initial 12 GiB budget split is 3 GiB probationary and 9 GiB protected.
++
++**Analysis.**
++
++- **Strong fit, protect demonstrated reuse during sequential scans.** One-use sheets remain in the bounded probationary queue and cannot consume the protected queue reserved for demonstrated reuse.
++- **Partial fit, adapt after workload or project changes.** New reused sheets can enter the protected queue, while inactive protected sheets leave in LRU order; the queue split controls how quickly that turnover occurs.
++- **Partial fit, limit operational complexity.** Two queue disciplines and a tunable split add bookkeeping, but avoid frequency counters and periodic aging.
++
++## Selection
++
++Use resident 2Q with a 3 GiB probationary FIFO and a 9 GiB protected LRU. Protecting repeatedly used comparison sheets during large sequential screenings is the major criterion and outweighs LRU's lower bookkeeping cost. Resident 2Q provides that isolation without the historical lag and counter-aging machinery of frequency-based eviction.
++
++The selection obligates the preview worker to maintain atomic queue membership and byte accounting, expose enough internal metrics to tune the split, and define promotion and eviction behavior at each queue boundary. It deliberately accepts more private replacement bookkeeping; it does not alter the preview API, rendering concurrency, pending-job protocol, or 12 GiB cache limit.
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..8a85d61 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,26 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++Use a resident 2Q policy with two byte-accounted queues:
++
++- The probationary queue is FIFO and initially receives every completed sheet. A cache hit while a sheet is probationary promotes it to the protected queue.
++- The protected queue is LRU. A cache hit while a sheet is protected moves it to the most-recently-used position.
++
++The initial split reserves 3 GiB for probationary sheets and 9 GiB for protected sheets. This gives one-use screening traffic a bounded admission window while reserving most of the cache for sheets that demonstrate reuse. The split is private worker configuration so it can be tuned from observed hit rates without changing the preview API or render queue.
++
++Admission that exceeds the probationary budget evicts probationary sheets in FIFO order. Promotion that exceeds the protected budget evicts protected sheets in LRU order. Queue membership changes and file admission or deletion occur under the worker's cache lock so requests cannot observe metadata that names a missing file. A completed sheet larger than the probationary budget is served from temporary output but is not admitted to the cache.
++
++Replacement metadata is rebuilt from an empty state when the worker starts; cache files without live queue membership are removed. This avoids treating filesystem timestamps as policy history and prevents stale files from consuming the cache budget.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|-------------------------|-----------|
++| Cache replacement policy | [Resident 2Q with a probationary FIFO and protected LRU](decisions/cache-replacement-policy.md) | Global LRU; frequency-based eviction with aging | 2Q prevents a long sequence of one-use screening sheets from displacing sheets that editors have reused for comparison, without adding counters or changing any external contract. |
++| Initial queue budget | 3 GiB probationary and 9 GiB protected, measured by JPEG bytes | Equal split; entry-count limits; a larger probationary share | A 25/75 split reserves most capacity for demonstrated reuse while leaving room for roughly 1,500 typical 2 MiB sheets in a sequential screening window; byte accounting preserves the 12 GiB bound when sheet sizes vary. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Tune the probationary/protected split after production metrics show each queue's hit, promotion, and eviction rates.

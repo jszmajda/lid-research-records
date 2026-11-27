@@ -1,0 +1,5 @@
+Overkill. Two reasons: the HLD tenet "all lookup completes on kiosk files; no runtime network" already eliminates the HTTPS directory and managed search options — an inherited constraint settles the choice, and decision docs aren't offered for that. And the decision's substance lives entirely inside the registry node (the certificates interface is unchanged), so it wouldn't rise to a project-level doc anyway. That's why I recorded it as a Decisions & Alternatives row in the registry LLD — one line of rationale a cold reader can act on.
+
+If circumstances ever change (say, the tenet itself is relaxed to allow lab-network lookups), the row plus the named alternatives is enough to re-run the judgment.
+
+Still open from my last message: your review of the LLD and specs, and the three probe questions (concurrent lookup during rebuild, rename atomicity, date-field validation scope).

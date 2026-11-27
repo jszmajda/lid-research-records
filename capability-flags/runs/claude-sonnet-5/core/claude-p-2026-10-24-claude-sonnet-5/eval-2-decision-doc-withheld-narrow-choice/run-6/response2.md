@@ -1,0 +1,5 @@
+Written: `docs/intent/previews/decisions/eviction-policy.md`, with the LLD's Decisions & Alternatives row now just pointing to it.
+
+It lays out the three options against four weighted criteria (scan resistance — major; bookkeeping cost, adaptation speed — moderate; tuning burden — minor), with LRU eliminated outright on the major criterion and 2Q winning over aged-frequency because aged-frequency's weak adaptation speed trades one failure mode for another, rather than fixing it. It also notes the decision cites no project tenet — it's local to this workload, not a standing lean, which is worth flagging in case that's a gap you want a tenet to fill later.
+
+Still open from before, unresolved by the doc: **hard partition vs. soft budget** for `A1in`, and whether to add a **ghost queue (`A1out`)**. How do you want those settled?

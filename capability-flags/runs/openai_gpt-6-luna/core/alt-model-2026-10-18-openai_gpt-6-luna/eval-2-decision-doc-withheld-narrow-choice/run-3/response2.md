@@ -1,0 +1,3 @@
+Yes. This choice remains worth revisiting: LRU, aged frequency, and 2Q each fit different screening patterns, and 2Q adds a queue-size trade-off the preview design will need to settle. A decision doc can preserve the criteria and explain what might justify changing the policy later.
+
+I recommend placing it under `docs/intent/previews/decisions/` and linking it from the preview LLD’s Decisions & Alternatives table. I’ll include it as part of the preview design work once you approve the HLD update above.

@@ -1,0 +1,8 @@
+I'd recommend keeping it as the `Decisions & Alternatives` table row in `previews-design.md` rather than creating a standalone decision doc, for two reasons:
+
+1. **Blast radius is strictly local to one node**: Under LID's *earns-its-place* heuristic, a decision doc is warranted when other design nodes are sized around the result and the rest of the system's intent leans on it. Here, the HLD tenet (*Keep cache paths and replacement bookkeeping private to the preview worker*) and the fixed `200`/`202`/`404` HTTP contract mean neither `review-api` nor the render queue nor the 12 GiB disk budget changes if the eviction policy is ever swapped.
+2. **Looking forward from the landed state, not back at the debate**: The length of the deliberation is a symptom of how hard it was to reach consensus, not how much context a future reader needs. A cold reader looking at the 2Q design only needs to know *why* 2Q was chosen over single-queue LRU and aged LFU (scan resistance for comparison sheets during sequential screenings without stale frequency decay across project switches)—which the table row captures completely in one place without maintaining a separate document.
+
+That said, if you believe a future maintainer will be tempted to re-litigate the eviction policy and want the full criteria-and-options breakdown preserved in `docs/intent/previews/decisions/cache-eviction-policy.md`, I am happy to write it.
+
+Would you like to stick with the table row or have me draft the standalone decision doc? And when you're ready, let me know how you'd like to resolve or defer the 5 LLD edge-case questions from above so we can move to Phase 3 (EARS specs).

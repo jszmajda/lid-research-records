@@ -1,0 +1,31 @@
+*Design-stage arrow with clean prose; workflow setup, tenet alignment, and downstream implementation still ahead.*
+
+**Scorecard**
+- ✓ HLD & mutation hygiene — crisp architecture-level rationale in present tense with zero history or changelog residue
+- ✓ Component layout & mode fit — clean two-leaf `docs/intent/` structure (`intake`, `fulfillment`) matching `Full` mode
+- ⚠ Tenet & decision alignment — short-notice fulfillment works against the FIFO tenet without a recorded trade-off
+- ⚠ Configuration & node metadata — `CLAUDE.md` omits LID workflow directives and both LLDs omit YAML frontmatter
+- ✗ Downstream arrow phases — all specs are marked implemented while `Tests` and `Code` do not yet exist
+
+Visit Planner's HLD, two component LLDs, and EARS specs establish a clear, readable design foundation with zero accumulation clutter; the highest-leverage next step is reconciling `CLAUDE.md` and node frontmatter via `/update-lid`, then settling the short-notice fulfillment vs. **First asked, first served** trade-off before walking the specs into tests and code.
+
+**Findings (9 total · 4 high · 3 medium · 2 low)**
+- **F1 (high):** `CLAUDE.md` carries the `## LID` mode marker (`Full`) without the `linked-intent-dev` workflow directives (consider running `/update-lid` to reconcile) · *modes are declared, not inferred* — explicit instruction-file directives anchor how sessions walk the arrow rather than leaving workflow discipline implicit
+- **F2 (high):** No test or code files exist in the repository yet, while every spec in `docs/intent/intake/intake-specs.md` and `docs/intent/fulfillment/fulfillment-specs.md` is marked `[x]` (implemented) rather than `[ ]` (active gap) · *canonical arrow shape — with a recursive design layer* — each component walks `HLD → LLDs → EARS → Tests → Code`, with spec markers tracking realized tests and code
+- **F3 (high):** `docs/intent/fulfillment/fulfillment-design.md` (`FILL-003`, `FILL-004`) opens canceled visits ≤36 hours away — a condition the HLD notes is common — to any eligible signed-in portal user for 20 minutes before scanning `enteredAt`, working against the HLD's **First asked, first served** tenet with no recorded exception · *tenets capture forward-looking preference* — leaf mechanisms lean with HLD tenets unless an explicit record names the tenet traded against and why
+- **F4 (high):** `docs/intent/fulfillment/fulfillment-design.md` states the ≤36-hour open-checkout window, 20-minute scan delay, and two-hour offer duration only in `## Design` prose, with no `Decisions & Alternatives` row capturing what alternatives were weighed or what cost was accepted · *docs carry current intent, written to be read cold* — live choices a cold reader would question or try to reverse need their rejected alternatives and accepted costs on the page
+- **F5 (medium):** `docs/intent/intake/intake-design.md` and `docs/intent/fulfillment/fulfillment-design.md` omit `parent:` and `prefix:` YAML frontmatter, leaving no explicit pointer from `fulfillment` to its `FILL-*` spec namespace · *effective intent-tree alignment* — frontmatter connects each human-named design node to its parent and EARS prefix so the tree is walkable in both directions
+- **F6 (medium):** `fulfillment-design.md` and `intake-design.md` leave behavioral edges open — whether offer-expiry rematch (`FILL-001`, `FILL-002`) skips the just-expired entry for that opening, how long ≤36-hour scan offers last and whether an active offer removes the slot from portal search, and how idempotency key expiry or payload mismatches behave · *LLDs close enough of the solution space* — LLDs narrow behavioral edges enough that independent sessions converge on compatible implementations
+- **F7 (medium):** `INTAKE-004` (idempotency retry) and `INTAKE-007` (patient withdrawal) state triggers without the exact-payload/unexpired-key conditions noted in `intake-design.md` or the staff-assisted caller path noted in `docs/high-level-design.md` · *scope disambiguation* — each EARS spec names the exact conditions and actors under which it applies so it stays unambiguous when found via grep
+- **F8 (low):** In `docs/high-level-design.md`, **Clinical fit precedes utilization** and **Commit before communicating** read closer to baseline invariants or settled rules than tie-breakers with defensible opposites, and the four-tenet list is unordered · *tenets capture forward-looking preference* — tenets work best as ordered tie-breakers between two defensible answers for choices no spec covers yet
+- **F9 (low):** `docs/high-level-design.md` covers Problem, Approach, Tenets, Goals, and Components under `Full` mode, and could add `Target Users`, `Non-Goals`, `Key Design Decisions`, and `Success Metrics` · *HLD is architecture and rationale* — root-level boundaries and falsification criteria give downstream designs a complete frame
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/intake/intake-design.md`, `docs/intent/intake/intake-specs.md`, `docs/intent/fulfillment/fulfillment-design.md`, `docs/intent/fulfillment/fulfillment-specs.md` (all 6 files in the repository)
+- Enumerated: 1 HLD, 2 LLDs, 2 spec files, 0 arrow-overlay files (`docs/arrows/` not installed), 0 test files, 0 implementation source files
+- Linkage metric: 15 unique EARS spec IDs (`INTAKE-001`–`INTAKE-007`, `FILL-001`–`FILL-008`), all marked `[x]`; 0 `@spec` references across tests and code
+- Defaults taken: proceeded directly with a full review in declared `Full` mode despite missing workflow directives in `CLAUDE.md` (per dispatch rules), and rendered this report inline without persisting files to disk (per advisory report defaults; no interactive prompts were triggered prior to report completion)
+
+Want me to walk through the findings in detail, focus on the high-priority items first, or work through a specific finding such as `F3`/`F4` together?
+
+If you have broader questions about using LID on Visit Planner — walking an existing spec set into tests-first implementation, deciding when a choice belongs in `Decisions & Alternatives` versus a decision doc, or when to introduce the arrow-maintenance overlay — I can help with those too.

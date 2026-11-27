@@ -1,0 +1,13 @@
+SHEET-MARK-KEY-001 (ubiquitous) — The Positions view tab SHALL be keyed by row identity, rendering exactly one row per symbol in `Snapshot.positions`, with the symbol string in column A ("Symbol", index 0 of POSITIONS_HEADER); the mark read-back SHALL use that symbol as its sole key.
+
+SHEET-MARK-KEY-002 (unwanted-behavior) — IF two rows for the same `Symbol` would be rendered on the Positions tab, THEN `render_positions` SHALL abort rendering and return `Err(ViewError::DuplicateSymbolRow(symbol))` carrying the offending symbol, publishing no partial tab. The guard SHALL be a defensive assertion: `Snapshot.positions` is a `Map<Symbol,_>`, so the branch is unreachable via the real API, and it exists so a future non-Map source cannot silently double-render a symbol.
+
+SHEET-MARK-KEY-003 (ubiquitous) — `ViewError` SHALL implement `Display` (and `std::error::Error`) via its `Debug` form, so `DuplicateSymbolRow("AMZN")` formats exactly as `DuplicateSymbolRow("AMZN")`.
+
+SHEET-MARK-KEY-004 (ubiquitous) — Row-anchored formula cells SHALL reference their own row number, computed as `row_index + DATA_START_ROW` where `DATA_START_ROW = 2` (row 1 is the frozen header), so per-symbol row identity is preserved between the write and the read-back.
+
+SHEET-MARK-KEY-005 (ubiquitous) — Symbols SHALL NOT be normalized for keying: the symbol is used verbatim as the row key and as the map key in `PricePass`, `MarksProduced.marks`, and `MarksProduced.degraded` (all `BTreeMap<Symbol,_>`, therefore case-sensitive, deduplicated, and ordered by symbol). Ticker resolution via `AliasMap` affects only the `Price`/`Quote Date` formula text, never the key: an aliased symbol renders `=GOOGLEFINANCE("BRK.B","price")` while the row key stays `BRK`; an unaliased symbol resolves to identity.
+
+SHEET-MARK-KEY-006 (event-driven) — WHEN `read_marks` resolves a settle pass, it SHALL look up each requested symbol from the caller-supplied `symbols` slice against `latest`, so a symbol requested but absent from every `PricePass` is treated identically to `Transient`; readings for symbols not in `symbols` SHALL be ignored. Where `symbols` repeats a symbol, the repeated resolution SHALL be idempotent (same-key `BTreeMap` insert), yielding at most one entry per symbol in the output.
+
+SHEET-MARK-KEY-007 (state-driven) — WHILE polling, each poll's readings SHALL overwrite the prior reading for the same symbol (latest-wins per symbol); settlement is reached when no requested symbol is `Transient` or absent, or after `SettleConfig.max_polls` (default 8) polls.

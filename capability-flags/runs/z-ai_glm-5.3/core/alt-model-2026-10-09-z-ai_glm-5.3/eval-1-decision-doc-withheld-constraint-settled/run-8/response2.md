@@ -1,0 +1,5 @@
+Overkill, in this case. The test is whether a cold reader of the *landed* design would re-litigate the choice — and they wouldn't: the HLD tenets (no runtime network access, lookups complete from kiosk files) rule out both alternatives, so an inherited constraint settles it, and it affects only the registry node. The length of your back-and-forth doesn't change that — the difficulty was really about whether to keep the tenets, which you did.
+
+The Decisions & Alternatives row already carries what a future reader needs: the two rejected options, the tenet-based rationale, and the accepted per-kiosk rebuild cost. A standalone doc would duplicate it.
+
+The Phase 2 review is still open: let me know which of the ten probe gaps to fold into the LLD versus defer, and whether the LLD itself is approved.

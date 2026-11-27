@@ -1,0 +1,3 @@
+Recorded the choice as `docs/decisions/self-hosted-websocket-delivery.md` and linked it from the HLD's Key Design Decisions. It sets out the shared constraints all three routes meet, the weighted criteria — latency, connection operations, cost and vendor coupling, recovery, burst capacity, failure visibility, and complexity — each option's strongest case and analysis, and the selection: self-hosting wins because it combines subsecond updates with no realtime vendor on the delivery path, accepting bounded session, publication-replay, and reconnect obligations. It also records what the choice forecloses and the conditions that would justify reopening it.
+
+The HLD is now settled. Shall I begin Phase 2 on the three unwritten nodes — change store, delivery, and browser sync?

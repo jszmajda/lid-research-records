@@ -1,0 +1,3 @@
+Yes — it clears the bar, though the reason is the landed-state test rather than the argument itself: a cold reader could reasonably reverse 2Q back to plain LRU without the criteria laid out. I've written it at `docs/intent/previews/decisions/eviction-policy.md` and linked it from the LLD's Decisions row. It covers all three options, the criteria (scan resistance as the major one), and why 2Q wins.
+
+The LLD is still waiting on your review, plus the three open questions from before: renderer-version selection, the failed-render outcome, and whether the job-ticket shape should be specified or left to implementation. Answer those and I'll proceed to EARS.

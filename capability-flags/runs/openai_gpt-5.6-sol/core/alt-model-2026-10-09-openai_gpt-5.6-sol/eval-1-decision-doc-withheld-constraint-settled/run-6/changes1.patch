@@ -1,0 +1,84 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..aecbdaf 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation, a kiosk-local lookup index, and lookup.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..7971248 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -13,12 +13,63 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, activation, and lookup all belong to this node. Each kiosk keeps an embedded SQLite index in application-owned local storage. SQLite is an implementation detail behind the registry interface; certificates do not receive database handles, paths, query syntax, or index lifecycle state.
++
++The registry keeps each prepared snapshot in its own immutable database file. A small active-snapshot marker identifies the database used for new lookups. Keeping database files versioned separates preparation from activation and avoids replacing a file while lookups still hold it open.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import proceeds in an application-owned staging area on the same local filesystem as the active index:
++
++1. Copy the snapshot from approved media into staging so later media removal cannot change the import input.
++2. Verify the signature manifest with the bundled public key before trusting snapshot metadata or records.
++3. Reject unsupported schema versions, malformed records, and duplicate serial-number keys.
++4. Build a new SQLite database containing the snapshot date, schema version, source digest, and equipment records. Create a unique index over the normalized serial-number key and run SQLite's integrity check.
++5. Close the prepared database, move it to its immutable final path, and atomically replace the active-snapshot marker.
++
++The active marker is the commit point. Until it is replaced, concurrent lookups continue to use the previous database. After replacement, new lookups use the new database; in-flight lookups may finish against the database they acquired. The registry retains an old database until no lookup holds it and removes abandoned staging artifacts during a later startup or import.
++
++Any failure before the commit point leaves the active marker unchanged and reports the import stage and cause without exposing records from the rejected snapshot. On startup, the registry ignores prepared databases that are not named by the active marker.
++
++## SQLite Data Model
++
++The database contains two logical tables:
++
++| Table | Contents | Constraints |
++|---|---|---|
++| `snapshot` | One row with snapshot date, schema version, and source digest | Exactly one row |
++| `equipment` | Normalized serial key, source serial number, equipment description, calibration date, and due date | Normalized serial key is unique |
++
++All values are bound as parameters. Snapshot content never becomes SQL text. The registry opens an activated database read-only for lookup and does not mutate inventory records in place.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before querying the unique serial-key index. Serial-number punctuation remains significant. Return `Found(record, snapshotDate)` for the exact normalized key or `NotFound(snapshotDate)` when it is absent. The snapshot date comes from the same database as the equipment result so a lookup cannot combine record data and metadata from different snapshots.
++
++The registry owns connection reuse and active-database handoff. `findBySerial` neither waits for an import to finish nor queries staged databases; it acquires the currently active database for the duration of one lookup.
++
++## Failure and Recovery Boundaries
++
++- A rejected or interrupted import does not alter the active marker.
++- A database absent from the active marker is never eligible for lookup, even if its build completed.
++- An active marker that cannot be read or points to an unreadable database is a registry-unavailable condition rather than an empty registry.
++- SQLite and filesystem failures are reported by registry operation and are not translated into `NotFound`.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Embedded SQLite index maintained independently by each kiosk | On-site HTTPS directory; managed search service | SQLite satisfies the kiosk-local lookup and USB-only update constraints without service availability, network timeout, credential, or recurring-cost concerns. Per-kiosk validation and index rebuilding remain contained within the registry boundary. |
++| Snapshot activation | Immutable versioned database plus atomically replaced active marker | Replace one fixed database file; update an active database in place | A separate commit point keeps partial builds invisible, preserves the prior snapshot on failure, and permits in-flight readers to finish without exposing mixed snapshots. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. Use a local embedded SQLite index while preserving the registry result interface.
++
++### Deferred
++
++1. Define the technician-visible state and recovery action when a kiosk has no valid active snapshot.
++2. Decide whether a snapshot whose date is older than the active snapshot may be activated intentionally.
++3. Define whether serial-number uniqueness is evaluated before or after lookup normalization.

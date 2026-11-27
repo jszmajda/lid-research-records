@@ -1,0 +1,17 @@
+**Phase 1 — HLD check.** The HLD already belonged to record-store for the concurrency mechanism, so no architectural change was needed. I refreshed two stale spots: the record-store row in the Architecture table now reads `Drafted` (was `Drafted; concurrency choice open`), and the prose after the table now says record-store's *policy* rather than its *unresolved choice*.
+
+**Phase 2 — Record-store LLD drafted.** I rewrote `docs/intent/record-store/record-store-design.md` around whole-visit revisions. The substance:
+
+- **Whole-visit revisions.** A submission is a complete visit snapshot naming its `base_revision_id` (absent only for a visit's first submission). Revisions form a per-visit graph.
+- **Open revisions determine state.** An open revision is one no later revision was built on and no resolution superseded. Exactly one ⇒ `resolved` (it is current); two or more ⇒ `unresolved`, and those are the **competing revisions**. Acceptance closes an open base and opens the child; a base that is not open (ancestor, already-parented, or superseded) just adds an open revision — so two workers editing from the same revision both become competing revisions regardless of arrival order, which is the property that keeps arrival order from conferring authority.
+- **Submission envelope, current-state response, resolution, and error shapes** are now specified (the contract tablet-sync and review-export will size around). Current-state retrieval returns `review_state` plus either `current_revision` or `competing_revisions`.
+- **Resolution** selects exactly one competing revision; the unselected ones are superseded but retained (no silent discard), and the request must name the full open set — a stale set is rejected (`RESOLUTION_SET_MISMATCH`) so a coordinator can't supersede a revision they never saw. Combining fields is a follow-up whole-visit edit, not server merge logic.
+- Recorded four Decisions rows with rationale (policy, resolution mechanics, base-ID-not-snapshot, full-open-set validation).
+
+**Edge probe.** A delegated blind reader probed the LLD and returned 10 gaps. I closed the clear internal ones directly: the open-revision/competing-base contradiction, the zero-open case, resolution idempotency and already-resolved handling, idempotency-key scope and consumption, resolution target/set validation, submission-response shape, and a machine-readable error table. Three remain for your triage (left in Open Questions & Future Decisions): retention horizon for superseded revisions, history pagination, and whether the simultaneous no-base-submission race deserves its own error code.
+
+Before I draft the EARS updates (Phase 3):
+
+1. Approve the LLD as-is, or give numbered feedback? In particular, does the resolution model — coordinator picks one intact revision, full-open-set validation, combining via a follow-up whole-visit edit — match your intent?
+2. Should I triage the three deferred items into the LLD or leave them deferred?
+3. This policy choice (whole-visit revisions over field-aware merge) stays live for a cold reader and tablet-sync/review-export are about to be sized around it. Want me to record it as a full decision doc (`docs/intent/record-store/decisions/whole-visit-revisions.md`), or is the Decisions row enough?

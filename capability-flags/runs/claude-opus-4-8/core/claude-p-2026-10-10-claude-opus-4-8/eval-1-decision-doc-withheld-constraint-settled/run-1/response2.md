@@ -1,0 +1,9 @@
+My recommendation: overkill — the row is the right home.
+
+The test the workflow applies is deliberately about the *landed* result, not how hard the call felt while you were making it: would a cold reader of the finished design re-litigate this without a full doc of options and criteria in front of them? Here they wouldn't. The offline tenets ("no runtime network access"; "kiosks have no network route") knock out both alternatives on their own — a reader who knows this is an air-gapped kiosk system sees SQLite as the native choice, not a live controversy. When an inherited constraint settles a choice that way, the guidance is explicitly *not* to write a doc, however long the deliberation ran.
+
+A decision doc earns its place when the choice stays genuinely live for that cold reader — credible options still in real tension, traded against several criteria, with other design nodes being sized around the outcome. The clearest tell we *don't* have that: nothing downstream reshapes based on which backend won. The certificate interface is unchanged, and `findBySerial` returns the same result type either way. The one row carries the "why not the networked options" question, and that's all a reader needs.
+
+There's a fair-warning bit to this too: offered a doc, most people accept whether or not they need it, so I try to only offer when it clears that bar. This one doesn't.
+
+If you'd still like one — say the back-and-forth itself is worth memorializing, or you expect the offline constraint to loosen someday and want the alternatives preserved at full resolution — I'm happy to write it in `docs/intent/registry/decisions/` and link it from the Decisions row. Otherwise I'll leave the row as-is and we move to the specs.

@@ -1,0 +1,9 @@
+Honest answer: I don't think the length of the argument is the thing that earns a doc — and I want to say that plainly rather than just ratify the ask, because "we fought about it" is exactly the pull LID warns is misleading. Plenty of hard-fought choices read as obvious once they land. The test is forward-looking: would a cold reader of the *result* re-litigate it?
+
+Here, mostly not. The choice stays inside the preview worker — nothing else gets sized around it — and the "why 2Q and not plain LRU?" question is answered in one line by the Decisions row that's already there. That's the signature of a row, not a doc. And decision docs are meant to stay rare; the cost of one isn't the writing, it's that a `decisions/` directory that fills up stops meaning "re-run this judgment here."
+
+There's **one** real argument on your side, and it's not the arguing — it's that the whole choice rests on an empirical bet: *editors alternate long screenings with repeated comparisons.* If the pilot shows a different mix, someone will want to reopen eviction, and at that point having the three options weighed against criteria laid out would genuinely save them re-deriving it. That's a legitimate re-litigation trigger, and it's why this is closer than my default.
+
+So: I lean row, but it's a judgment call that's yours to make, and this one clears the bar better than most "we argued a lot" requests do. If you still want the doc knowing it's optional, say so and I'll write a proper one — `docs/intent/previews/decisions/cache-eviction-policy.md`, context + decision elements + the three options in full + selection — and link it from the Decisions row.
+
+Either way it doesn't change what comes next: pending your call on that, plus the HLD one-liner and the edge-probe triage above, I move to the EARS specs and then the Phase 4 divergence audit, stopping before tests.

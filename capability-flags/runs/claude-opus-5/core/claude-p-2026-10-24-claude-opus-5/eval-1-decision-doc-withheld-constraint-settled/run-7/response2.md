@@ -1,0 +1,9 @@
+Overkill, and the reason matters more than the verdict.
+
+The test the skill applies isn't "was this hard to decide?" — it's forward-looking from the landed state: would a cold reader of the result find the choice non-obvious, and be tempted to reverse it without the full tradeoffs laid out? Here they'd read the HLD's first two tenets — lookup completes from files on the kiosk, no runtime network access, no network route during normal operation — and the two rejected options are gone before any weighing starts. A doc's job is to let someone re-run a judgment; there isn't a judgment to re-run once that constraint is in view. What's left is "why SQLite rather than an in-memory map or a flat-file scan," and that turns on the 250 ms goal against 4 GB of RAM — one line each, which is what the Decisions rows now carry.
+
+The skill is also explicit that a long deliberation is a symptom, not the test, and calls out the specific trap: people offered a doc tend to accept whether they need one or not, and a `decisions/` directory full of them is a smell. So I recorded rows and didn't offer.
+
+The one thing that would change my answer is the tenet question from my last message. If "no runtime network access" is firmer than a lab-network lookup — i.e. it means what it says — rows are right. If you actually hold it more loosely and an on-site HTTPS directory was genuinely in contention, then the choice stays live for a cold reader: three credible options traded against latency, maintenance burden, and index-rebuild cost on each kiosk, with the certificate interface fixed either way. That version earns a doc at `docs/intent/registry/decisions/lookup-backend.md`, and it would also mean the HLD tenet needs rewording, since a doc that contradicts a tenet on the page is worse than no doc.
+
+So: rows as it stands. Say the word if the tenet is softer than written and I'll write the doc and fix the tenet together.

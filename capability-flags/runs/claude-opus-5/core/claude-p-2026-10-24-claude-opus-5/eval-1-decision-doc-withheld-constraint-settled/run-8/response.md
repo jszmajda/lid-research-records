@@ -1,0 +1,22 @@
+Registry LLD is drafted around the local SQLite index — `docs/intent/registry/registry-design.md` now specifies the snapshot-directory + `active`-pointer layout, the four-step import (verify signature → check schema version → stream-build a fresh index → rewrite the pointer), and lookup against the active index, with a Decisions table recording the backend choice and the activation mechanism.
+
+One thing worth saying plainly about the deliberation: the two service-backed options were not actually close. The HLD's tenets already rule out a network route during kiosk operation, so both the HTTPS directory and the managed search service would have required reopening a settled architectural decision, not just trading index maintenance for lookup cost. You picked the one option the existing architecture allows. Because an inherited constraint settles it, I recorded it as a Decisions row rather than offering a decision doc.
+
+**Edge-case probe (delegated, blind to our conversation).** It looked hardest at crash timing around activation and at the gap between "signature verified" and "records streamed." Consolidated, highest-value first:
+
+1. **Truncation vs. signature coverage.** The signature covers the manifest. If the manifest does not commit to a digest and record count of the NDJSON body, a truncated 150 MB snapshot imports "successfully" with a subset of records and activates — silently replacing a complete snapshot. Probably the most serious gap found.
+2. **Atomicity of the pointer write is asserted, not specified.** Rename-over-temp (atomic) or in-place rewrite (can be read empty or torn)? And is the pointer fsynced before import reports success?
+3. **Crash between build and activation.** Who removes the orphaned build directory, and how does a sweep tell a crashed build from one in progress?
+4. **Lookup has no stated behavior for a bad pointer** — missing (first boot, no snapshot yet), naming a directory that is gone, or a database that will not open. `NotFound(snapshotDate)` cannot even be formed without a readable snapshot date, so this may need a third result type, which would touch the certificates interface.
+5. **Malformed records are unspecified.** Only duplicate serials are named as a failure. Invalid JSON, a missing field, an unparseable date, a serial that normalizes to empty, a trailing partial line — whole-import rejection, or skip-and-count?
+6. **Import error shape.** Typed failure values with the offending serial and line number, or free text? An offline technician has to escalate to the inventory team by hand, so specifics matter here.
+7. **Two ambiguities I did not resolve** — each admits two readings and I'd rather you pick:
+   - Does a lookup read the pointer and open the database per request (so activation can change the snapshot date mid-session), or is the handle held until restart (so a kiosk serves the old snapshot and the superseded directory cannot be deleted)? This also decides the retention question.
+   - Is the primary key plain `TEXT` compared byte-exactly on an application-normalized value, or does it lean on SQLite collation? These differ for non-ASCII serials, since the rule uppercases ASCII letters only.
+
+Also noted but lower value: enforcing `snapshot_meta`'s single-row invariant, insert/transaction granularity and journal mode against the 4 GB ceiling, and whether lookups keep the 250 ms budget while a build is running. The doc's existing Open Questions already cover retention, concurrent imports, disk space, and build-progress reporting.
+
+**Two things I need from you before Phase 3:**
+
+- Which of 1–7 should land in the LLD now, and which stay as open questions? My recommendation: fix 1, 2, 3, 5, 6 in the LLD, and answer 7's two ambiguities now since they constrain the specs; 4 I'd also settle now because a third lookup result would cross into the certificates segment.
+- The HLD still says the registry's "private lookup backend remains open" (`docs/high-level-design.md:13`). That sentence is now stale, but it sits in the parent node, so I'd rather not edit it without your say-so. May I update it to name the embedded on-kiosk index? It's a one-line prose fix, no architectural change, and nothing else in the HLD depends on it.

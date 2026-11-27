@@ -1,0 +1,169 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..9fb4577 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache whose replacement policy is 2Q.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+@@ -20,6 +20,7 @@ The review API accesses previews only through the fixed HTTP interface. No other
+ - Never treat a cache as the authoritative copy of source footage.
+ - Key previews by immutable clip revision and renderer version.
+ - A cache miss is ordinary behavior, not an API failure.
++- Protect repeatedly compared previews over one-pass screening scans when cache space is contended.
+ - Keep cache paths and replacement bookkeeping private to the preview worker.
+ 
+ ## Goals
+@@ -27,7 +28,8 @@ The review API accesses previews only through the fixed HTTP interface. No other
+ - Support 24 active editors on one eight-core preview worker during the pilot.
+ - Limit cached JPEG data to 12 GiB.
+ - Deduplicate concurrent rendering requests for the same preview key.
+-- Return a ready preview or a pending response through the same interface for every eviction policy.
++- Keep an editor's repeatedly compared contact sheets resident across a long sequential screening.
++- Return a ready preview or a pending response through the same interface, regardless of cache state.
+ 
+ ## Non-Goals
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..3a80832 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,11 +7,11 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Editors alternate long sequential screenings, which touch each sheet once, with comparison sessions, which revisit a small set of sheets many times. The mix varies by production, so the cache must tolerate both patterns rather than suit one of them.
+ 
+ ## Architecture
+ 
+-Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. This contract is fixed regardless of cache eviction policy.
++Expose `GET /internal/previews/{clip-id}/{revision}` with three outcomes: 200 and JPEG bytes, 202 and a job ticket with a two-second retry interval, or 404 for an unknown revision. The contract does not vary with cache state or replacement policy.
+ 
+ Use a FIFO render queue with at most four active rendering jobs. Cache entries and all replacement-policy metadata belong exclusively to this worker. Other nodes do not access files, pin previews, inspect policy counters, or depend on entries remaining warm.
+ 
+@@ -21,6 +21,86 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ ## Private Cache
+ 
+-Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
++Cached JPEG data may occupy at most 12 GiB. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement Policy
++
++The cache uses 2Q: a two-queue approximation of LIRS that separates sheets seen once from sheets seen more than once. The worker keeps three structures — two queues that hold JPEG data and one queue of keys that holds no data at all.
++
++| Structure | Holds | Order | Eviction |
++|---|---|---|---|
++| First-use queue | JPEG data of sheets never retrieved since admission | Admission order | Oldest admission first |
++| Hot queue | JPEG data of sheets retrieved at least twice since admission | Least-recently-retrieved first | Least-recently-retrieved first |
++| Ghost queue | Preview keys of sheets evicted from the hot queue — no JPEG data | Record order | Oldest recorded key first |
++
++```
++   render completes
++          │
++          ▼
++  ┌───────────────┐   2nd+ retrieval   ┌─────────────┐
++  │ first-use     │───────────────────►│ hot         │
++  │ queue         │                    │ queue       │
++  └───────┬───────┘                    └──────┬──────┘
++          │ evict oldest admission            │ evict least-recently-retrieved
++          ▼                                   ▼
++     (bytes freed)                   ┌─────────────┐
++                                     │ ghost queue │  keys only, no JPEG
++                                     └─────────────┘
++          ▲                                   │
++          └────── ghost hit: render again, ────┘
++                 admit straight to hot
++```
++
++### Admission and Promotion
++
++A rendered sheet enters the first-use queue, unless its preview key is already recorded in the ghost queue — a key in the ghost queue proves the sheet was retrieved at least twice before, so the re-rendered sheet is admitted directly to the hot queue. A preview key is held by at most one of the three structures at any time.
++
++The reuse signal counts retrievals from the cache, not requests. The retrieval that first delivers a freshly rendered sheet is its delivery and is not reuse; every retrieval after that one is reuse. A sheet in the first-use queue that is retrieved again is promoted to the hot queue without being re-rendered, and its byte accounting moves with it. A sheet in the hot queue that is retrieved has its position within the hot queue refreshed.
++
++This keeps one-off screening scans in the first-use queue, where they are evicted in admission order, while sheets an editor keeps coming back to accumulate in the hot queue and survive the scans. Render jobs and pending-job responses are not reuse signals; a browser retrying a pending ticket every two seconds does not turn a one-off sheet into a hot entry.
++
++### Budgets
++
++The 12 GiB cached-JPEG budget is partitioned between the two data queues. Each queue evicts within itself when its own budget is exceeded, so the hot queue is never emptied to make room for a first-use sheet.
++
++| Parameter | Value | Meaning |
++|---|---|---|
++| Total cached JPEG | 12 GiB | Hard ceiling on cached JPEG data |
++| First-use budget | 3 GiB | Bytes of sheets that have never been retrieved since admission |
++| Hot budget | 9 GiB | Bytes of sheets retrieved at least twice |
++| Ghost queue depth | 4,096 keys | Preview keys remembered after hot eviction |
++
++At the typical 2 MiB sheet, the first-use budget holds roughly 1,500 sheets and the hot budget roughly 4,600. The split is a tuned parameter: the pilot adjusts it from observed screening patterns, and the two budgets always sum to 12 GiB. A sheet larger than the first-use budget is admitted to the hot queue instead; a sheet larger than the hot budget is served but not cached.
++
++### Concurrency and Privacy
++
++Admission is serialized inside the worker, so concurrently completing render jobs cannot push cached JPEG data past 12 GiB. Queue membership, recency order, ghost keys, and budget configuration are worker-internal state: the internal preview endpoint exposes only 200, 202, and 404, and no other node observes them.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q — first-use queue, hot queue, and ghost queue | LRU; frequency counting with aging | Editors alternate long sequential screenings with repeated comparisons of a small set of clips. LRU lets a screening scan evict comparison sheets, and aged frequency counters keep yesterday's favorites alive well past their usefulness. 2Q protects reused sheets from one-off scans, and the extra bookkeeping is confined to the worker, where the cache is private. |
++| Eviction order within a queue | First-use queue by admission order, hot queue by least-recently-retrieved | Admission order in both queues; least-recently-used everywhere | The first-use queue is a scan buffer where age is the only signal available; ordering it by recency would need bookkeeping the queue does not justify. The hot queue holds sheets whose usefulness tracks how recently they were used, so recency ordering protects the working set. |
++| Reuse signal | Retrievals from the cache, excluding the delivery of a freshly rendered sheet | Counting every request, including pending-job retries | The browser retries a pending ticket every two seconds. Counting those retries would promote nearly every sheet to the hot queue and collapse the policy into a single queue, so reuse is counted only where a sheet is actually handed back from the cache. |
++| Budget split | 3 GiB first-use, 9 GiB hot, summing to 12 GiB | Even split; a first-use-weighted split | The hot queue holds the comparison sheets the policy exists to protect, and the first-use queue only buffers scans, so the hot queue gets the larger share. Both budgets are pilot-tuned. |
++| Ghost queue depth | 4,096 keys | Proportional to cache size; unbounded | A fixed key count bounds the metadata a worker restart or a long screening can accumulate, and 4,096 keys covers the comparison set of several editors at once. |
++| Ghost hit handling | Re-render, then admit straight to the hot queue | Re-render into the first-use queue | A ghost key records prior reuse, so the sheet returns to the hot queue it was evicted from rather than re-entering the scan buffer and having to earn promotion again. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. The replacement policy is 2Q, with the split between the first-use and hot queues treated as a pilot-tuned parameter.
++2. The public and internal preview interfaces carry no cache state, so the policy remains invisible to the review API and the browser.
++
++### Deferred
++
++1. Whether the hot queue should also order by frequency once pilot telemetry shows that some sheets are retrieved many more times than others.
++2. Whether the preview cache should survive a worker restart, and if so how the queues are rebuilt.
++3. Whether the ghost queue depth needs to grow with the number of editors on the worker.
++
++## References
++
++- `docs/high-level-design.md` — FrameDesk high-level design.
++- `docs/intent/review-api/review-api-design.md` — the public request boundary this worker serves.
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..db1b446 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,26 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++
++## Cache Replacement
++
++- [ ] **PREVIEW-006**: When the preview worker admits a newly rendered contact sheet whose preview key is not recorded in the ghost queue, the system SHALL place the sheet in the first-use queue.
++- [ ] **PREVIEW-007**: When a contact sheet held in the first-use queue is retrieved from the cache and that retrieval is not the sheet's delivery, the system SHALL move the sheet to the hot queue without re-rendering it.
++- [ ] **PREVIEW-008**: When a contact sheet held in the hot queue is retrieved from the cache, the system SHALL refresh the sheet's position within the hot queue without re-rendering it.
++- [ ] **PREVIEW-009**: When a contact sheet is evicted from the hot queue, the system SHALL record the sheet's preview key in the ghost queue and SHALL NOT retain the sheet's JPEG data.
++- [ ] **PREVIEW-010**: When a requested preview key is recorded in the ghost queue, the system SHALL render the sheet again, SHALL admit the rendered sheet directly to the hot queue, and SHALL remove the preview key from the ghost queue.
++- [ ] **PREVIEW-011**: When admitting a contact sheet to the first-use queue would exceed the first-use byte budget, the system SHALL evict first-use-queue sheets in admission order until the sheet can be admitted.
++- [ ] **PREVIEW-012**: When admitting a contact sheet to the hot queue would exceed the hot byte budget, the system SHALL evict hot-queue sheets in least-recently-retrieved order until the sheet can be admitted.
++- [ ] **PREVIEW-013**: The system SHALL partition the 12 GiB cached-JPEG budget into a first-use byte budget and a hot byte budget whose sum is 12 GiB.
++- [ ] **PREVIEW-014**: When a contact sheet is admitted to the cache, the system SHALL treat the first subsequent retrieval of that sheet as its delivery and SHALL NOT count that retrieval as reuse.
++- [ ] **PREVIEW-016**: When multiple render jobs complete concurrently, the system SHALL serialize admission so that cached JPEG data never exceeds 12 GiB.
++- [ ] **PREVIEW-017**: The system SHALL retain at most 4,096 preview keys in the ghost queue and SHALL discard the oldest recorded key when the ghost queue is full.
++- [ ] **PREVIEW-018**: When a contact sheet's size exceeds the first-use byte budget, the system SHALL admit the sheet to the hot queue instead; and when its size exceeds the hot byte budget, the system SHALL serve the sheet without caching it.
++- [ ] **PREVIEW-019**: The system SHALL hold a preview key in at most one of the first-use queue, the hot queue, and the ghost queue at any time.
++- [ ] **PREVIEW-020**: The system SHALL key every cached preview by clip ID, clip revision, and renderer version.
++- [ ] **PREVIEW-021**: The system SHALL keep temporary render output separate from cached JPEG data and SHALL remove that output when the render job completes or fails.
++- [ ] **PREVIEW-022**: The system SHALL run at most four render jobs concurrently.
++
++## Internal Boundaries
++
++- [ ] **PREVIEW-015**: The internal preview endpoint SHALL return only 200, 202, or 404 and SHALL NOT expose cache queue membership, eviction counters, or replacement-policy configuration.

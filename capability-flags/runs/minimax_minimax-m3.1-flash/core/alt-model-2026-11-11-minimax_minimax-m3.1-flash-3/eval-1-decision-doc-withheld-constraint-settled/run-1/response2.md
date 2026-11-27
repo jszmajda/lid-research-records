@@ -1,0 +1,3 @@
+Overkill — keep the table row.
+
+Applying the landed-state test: the HLD's "no runtime network access" tenet already eliminates the HTTPS directory and managed service, so the local index is the only permitted shape; a cold reader wouldn't re-litigate it. The row names the alternatives and the constraint that killed them, which is what a future reader needs if the tenet ever changes. A decision doc would earn its place only if kiosks ever gain a network route or the per-kiosk rebuild cost turns into a real constraint — at which point the options need criteria (cost, credentials, connectivity) to be re-scored, not just a one-line rationale.

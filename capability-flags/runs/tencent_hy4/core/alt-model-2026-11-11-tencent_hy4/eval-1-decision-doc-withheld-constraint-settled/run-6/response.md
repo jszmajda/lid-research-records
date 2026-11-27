@@ -1,0 +1,1 @@
+Now let me explore the docs tree and read all existing intent artifacts.

@@ -1,0 +1,3 @@
+**Phase 1 — HLD check:** The selected local index fits the existing kiosk-offline architecture and leaves the certificate interface unchanged. I updated `docs/high-level-design.md` to remove the stale note that the registry backend was still open; the SQLite design belongs in the registry LLD. The existing HLD constraints already cover offline lookups, USB snapshots, and the stable registry boundary, so I made no tenet changes.
+
+Please review this HLD alignment. If it looks right, approve and I’ll proceed to the registry LLD phase.

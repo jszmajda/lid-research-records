@@ -1,0 +1,1 @@
+Now let me explore the repository structure and existing LID artifacts.

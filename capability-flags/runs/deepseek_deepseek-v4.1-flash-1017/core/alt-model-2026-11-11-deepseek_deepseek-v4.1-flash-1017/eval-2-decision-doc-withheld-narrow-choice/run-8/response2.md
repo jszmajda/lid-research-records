@@ -1,0 +1,3 @@
+I’d keep it as the Decisions & Alternatives row, not a full decision doc. How long the debate ran isn’t the test; the landed question is whether a cold reader would re-litigate the choice. This decision is confined to the preview worker, changes no sibling node’s contract, and the row already records 2Q, the rejected LRU and aged-frequency options, and why. A full doc would mostly restate that.
+
+If you want the deliberation preserved anyway, I’ll write it under `docs/intent/previews/decisions/`; otherwise I’ll keep the row and wait for your triage/approval before the EARS pass.

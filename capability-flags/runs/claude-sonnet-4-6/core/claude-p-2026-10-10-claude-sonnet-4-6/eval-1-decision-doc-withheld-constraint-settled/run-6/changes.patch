@@ -1,0 +1,81 @@
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..c9f7e66 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -11,14 +11,72 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index build, and lookup all belong to this node. The lookup backend is a local embedded SQLite database. No certificate behavior or interface change is affected by this choice.
++
++## Storage Layout
++
++The active index lives at a fixed path (`registry.db`) in the application data directory. It holds two tables:
++
++```sql
++CREATE TABLE records (
++    serial      TEXT PRIMARY KEY,   -- pre-normalized: trimmed, ASCII uppercased
++    record_json TEXT NOT NULL
++);
++
++CREATE TABLE meta (
++    snapshot_date    TEXT NOT NULL,
++    schema_version   TEXT NOT NULL
++);
++```
++
++`serial` is the `PRIMARY KEY`, which gives a B-tree index. A single parameterized lookup over 90,000 rows resolves well within the 250 ms goal. Storing the normalized form on write avoids normalizing on every read.
++
++`meta` holds exactly one row. Its `snapshot_date` is returned with every lookup result, whether or not a matching record exists.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import writes to a staging file (`registry-staging.db`) in the same directory. Activation is an atomic rename of that file to `registry.db`. The sequence:
++
++1. Verify the signature using the bundled public key.
++2. Reject unsupported schema versions.
++3. Write all records (pre-normalized) to `registry-staging.db`, enforcing the `PRIMARY KEY` constraint to catch duplicate serials.
++4. Write the single `meta` row.
++5. Flush and close `registry-staging.db`.
++6. Rename `registry-staging.db` → `registry.db`.
++
++Steps 1–5 leave the current `registry.db` untouched. The rename at step 6 is the sole activation moment. If any step 1–5 fails, delete `registry-staging.db` and leave the previous snapshot active. Concurrent lookups during the build see only the previous file; the staging file is never opened for reading.
++
++If `registry-staging.db` is found at startup (indicating a prior crashed import), it is deleted before any further operation.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Execute a single parameterized query:
++
++```sql
++SELECT record_json FROM records WHERE serial = ?
++```
++
++Read `snapshot_date` from `meta` unconditionally. Return `Found(record, snapshotDate)` or `NotFound(snapshotDate)`.
++
++While no snapshot has ever been imported, `findBySerial` returns `NotFound` with a sentinel snapshot date (empty string or a defined "no snapshot" constant — to be settled before Phase 5).
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite | On-site HTTPS directory; managed search service | SQLite keeps all lookup logic inside the kiosk, directly satisfying the HLD tenet that all serial-number lookup shall complete using files on the kiosk. No runtime network access, no timeout handling, no external credentials. Index is rebuilt on each snapshot import entirely within this component. The two network-backed alternatives contradict the no-runtime-network-access tenet. |
++| Atomic activation | Staging-file rename | In-place write within one file; double-buffer with symlink | Rename is atomic at the OS level; it requires no SQLite-level transaction spanning import and activation, and leaves the active file completely untouched until the new snapshot is fully validated and flushed. |
++| Pre-normalized serial as PRIMARY KEY | Yes | Separate normalized-serial index; full-text extension | PRIMARY KEY provides the required B-tree index with no extra overhead. Pre-normalizing on write makes every read a direct equality lookup with no per-query normalization step. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Lookup backend: local embedded SQLite — offline lookup, no network dependency, index built and activated entirely within this component.
++
++### Deferred
++
++1. Sentinel snapshot date value for the no-snapshot-yet state — empty string vs. a defined constant (to be settled before EARS specs are written for that path).
++2. Record field schema within `record_json` — the JSON structure a certificate component may need beyond the fixed result type.

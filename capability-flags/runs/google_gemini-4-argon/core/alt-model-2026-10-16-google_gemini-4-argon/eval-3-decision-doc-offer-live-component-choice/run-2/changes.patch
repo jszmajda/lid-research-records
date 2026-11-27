@@ -1,0 +1,311 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 55f85ac..0d2ae6a 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -15,11 +15,11 @@ Provide offline capture, a server-side record store, and a review-to-export work
+ | Node | Responsibility | Design | State |
+ |---|---|---|---|
+ | site-catalog | Maintain stable plot references and distribute the field catalog | docs/intent/site-catalog/site-catalog-design.md | Drafted |
+-| record-store | Accept visit submissions and define how concurrent edits become a current record | docs/intent/record-store/record-store-design.md | Drafted; concurrency choice open |
++| record-store | Accept visit submissions and define how concurrent edits become a current record | docs/intent/record-store/record-store-design.md | Drafted |
+ | tablet-sync | Keep local drafts, submit changes, and explain server outcomes to field workers | docs/intent/tablet-sync/tablet-sync-design.md | Not written |
+ | review-export | Present review work and produce the partner's reviewed CSV | docs/intent/review-export/review-export-design.md | Not written |
+ 
+-The concurrency mechanism belongs to record-store, not this HLD. Tablet-sync and review-export depend on that node's unresolved choice: it determines submission metadata, the shape of review work, and which record states can enter an export. Those two designs must wait for its contract.
++The concurrency mechanism belongs to record-store, not this HLD. Tablet-sync and review-export depend on that node's contract: it determines submission metadata, the shape of review work, and which record states can enter an export.
+ 
+ ## Tenets
+ 
+diff --git a/docs/intent/record-store/decisions/concurrent-visit-edits.md b/docs/intent/record-store/decisions/concurrent-visit-edits.md
+new file mode 100644
+index 0000000..78121c3
+--- /dev/null
++++ b/docs/intent/record-store/decisions/concurrent-visit-edits.md
+@@ -0,0 +1,116 @@
++---
++node: record-store
++---
++
++# Decision: Concurrent Visit Edit Model
++
++## Context
++
++Seasonal field workers survey 320 permanent coastal vegetation plots across 12 shared Android tablets, producing roughly 6,000 visit records per season. Tablets remain offline for up to 48 hours at a time, and workers frequently inspect or correct an existing visit independently after comparing paper field notes. Because edits can be captured days after a visit's starting state was fetched, the record store regularly receives concurrent submissions derived from the same prior state of a visit.
++
++A visit record contains `plot_id`, `observation_date`, `observers`, `species_cover` (a list of `{ species_code, cover_pct }` entries), and freeform `notes`. Two coordinators review flagged visits and produce a reviewed CSV export for the regional science partner every Friday.
++
++The record store must define how concurrent edits to the same visit are represented, when a visit has an authoritative current state vs. unresolved review work, and what contract downstream subsystems (`tablet-sync` and `review-export`) build against. If this model is wrong, the system either silently corrupts scientific observations by combining incompatible edits or overwhelms the two coordinators before the Friday export deadline.
++
++## Decision Elements
++
++### Gates
++
++- **No silent loss of submitted edits** *(inherited from HLD tenet: "Do not silently discard a submitted edit")*: Every accepted worker submission must remain preserved and recoverable in the record store regardless of arrival order or concurrency outcome. This gate eliminates arrival-order overwrite ("last-write-wins").
++
++### Weighted Criteria
++
++- **Scientific cross-field integrity (major)** *(derives from HLD Non-Goal: "Automated botanical validation or inference of scientific intent", and HLD tenet: "Keep the path from a submitted observation to an exported value inspectable")*: Ecological fields within a single visit are often scientifically coupled even when stored in separate attributes. Re-identifying a salt-marsh species (e.g., changing `SPAL` to `SPPA`) typically changes the cover estimate for one or both species and accompanies an explanatory remark in `notes`. A concurrency mechanism should not automatically synthesize a hybrid record whose combination of fields no observer ever witnessed or approved.
++- **Operational simplicity and maintainability (major)** *(derives from HLD tenet: "Prefer workflows two coordinators can operate without a dedicated systems administrator")*: The concurrency rules, storage schema, and provenance model must be simple to reason about, debug, and maintain across seasons without evolving custom merge heuristics for nested lists and scalar fields.
++- **Coordinator review queue volume (moderate)** *(derives from HLD Goal: "Make reviewable problems visible before the Friday export")*: Two coordinators review all unresolved visits before the weekly Friday CSV export. The mechanism should keep the weekly review workload manageable for two people across ~6,000 seasonal visits.
++- **Tablet payload and state footprint (minor)** *(derives from HLD tenet: "Let field workers continue collecting observations without connectivity")*: Offline tablets must retain enough baseline metadata across restarts and 48-hour disconnections to submit edits and reconcile server responses over intermittent coastal connectivity.
++
++## Options in the Domain
++
++### Option 1: Whole-Visit Revisions
++
++#### Description
++
++Each accepted submission or coordinator resolution is stored as a complete, immutable visit revision with a server-assigned `revision_id` and `parent_revision_ids`. When a tablet edits an existing visit, it submits the complete replacement visit payload alongside the `base_revision_id` it started from.
++
++- If `base_revision_id` matches the visit's sole active head revision, the new revision supersedes that head and becomes the new `current` revision (linear fast-forward).
++- If `base_revision_id` refers to an already-superseded revision (or if the visit already has multiple active heads), the new revision is stored as a competing head alongside the existing head(s), and the visit transitions to `needs_review`.
++- While a visit is in `needs_review`, no single revision is authoritative; a coordinator resolves the conflict by inspecting the competing whole-visit revisions and submitting a resolution revision whose `parent_revision_ids` names all resolved heads.
++
++#### Demonstration
++
++1. Revision `R1` is the current head of visit `V1` (`observers: ["A. Rivera"]`, `species_cover: [{ "species_code": "SPAL", "cover_pct": 40 }]`, `notes: ""`).
++2. Tablet A (offline, base `R1`) adds a missing observer (`observers: ["A. Rivera", "M. Chen"]`) and submits first, producing head `R2` (`parent_revision_ids: ["R1"]`, status `current`).
++3. Tablet B (offline, base `R1`) revises the species identification and notes (`species_cover: [{ "species_code": "SPPA", "cover_pct": 35 }]`, `notes: "Re-checked ligule; SPPA not SPAL"`), submitting with `base_revision_id: "R1"`.
++4. The record store records `R3` (`parent_revision_ids: ["R1"]`), sets active heads to `["R2", "R3"]`, and marks `V1` as `needs_review` for a coordinator to combine.
++
++#### Analysis
++
++- **No silent loss of submitted edits (gate)**: **Passes.** Every submission is stored as an immutable revision in the visit's DAG; competing edits become co-equal active heads rather than overwriting one another.
++- **Scientific cross-field integrity (major)**: **Strong fit.** A worker's submitted visit is never broken apart or recombined automatically. Even when one worker edits `species_cover` and another edits `notes` or a second species entry, a coordinator inspects the full visit context before any combined state becomes authoritative.
++- **Operational simplicity and maintainability (major)**: **Strong fit.** Conflict detection reduces to a single check on whether `base_revision_id` is the sole active head. The server requires no field-specific diffing, set-merge semantics, or per-field provenance tracking.
++- **Coordinator review queue volume (moderate)**: **Weak fit.** Any concurrent edit to the same visit—even completely unrelated changes such as fixing a typo in `observers` on one tablet and adding a species on another—produces competing heads that a coordinator must resolve before Friday export.
++- **Tablet payload and state footprint (minor)**: **Strong fit.** Tablets only need to track the single `base_revision_id` UUID alongside each cached visit rather than storing a separate immutable base snapshot or computing structured field diffs.
++
++#### Summary
++
++Preserves complete whole-visit scientific context and keeps the server and tablet state model minimal, at the cost of routing benign disjoint-field edits into the coordinator review queue.
++
++---
++
++### Option 2: Field-Aware Three-Way Merge
++
++#### Description
++
++Each visit is modeled as a structured collection of independently mergeable fields and keyed sub-collections (`observation_date`, `observers` set, `species_cover` map keyed by `species_code`, and `notes`). Tablets retain a full snapshot of the base visit state (or base revision reference) and submit structured three-way changes against that base.
++
++When concurrent edits arrive for the same base state, the record store compares each edit's field-level delta against the common ancestor:
++- If two submissions modify strictly disjoint fields or distinct keys (for example, Tablet A adds `"M. Chen"` to `observers` while Tablet B updates `cover_pct` for `"SPAL"`), the server automatically merges both changes into a new composite current record and records field-level provenance pointing to the contributing submissions.
++- If two submissions modify the same scalar field (`observation_date`, `notes`) or the same `species_code` entry in `species_cover` to different values, the server flags only the overlapping field(s) as conflicted and places the visit into review.
++
++Why this option remains a serious alternative: in field workflows where one tablet routinely fixes administrative metadata (observer names, plot dates) while another refines species entries—or where concurrent edit volume grows beyond what two coordinators can manually clear each week—automatic merging of disjoint fields substantially reduces the Friday review queue and gets more visits immediately ready for CSV export without coordinator intervention.
++
++#### Demonstration
++
++1. Base visit `V1` has `observers: ["A. Rivera"]`, `species_cover: [{ "species_code": "SPAL", "cover_pct": 40 }]`, `notes: ""`.
++2. Tablet A submits a delta against the base adding `"M. Chen"` to `observers`.
++3. Tablet B submits a delta against the same base adding `{ "species_code": "DISP", "cover_pct": 15 }` to `species_cover` and updating `notes`.
++4. Because `observers`, `species_cover["DISP"]`, and `notes` are disjoint in the merge rules, the server automatically produces a merged current visit containing both edits without queuing the visit for coordinator review.
++
++#### Analysis
++
++- **No silent loss of submitted edits (gate)**: **Passes.** Original submissions are retained in history alongside field-level provenance on the merged record, and overlapping edits to the same field are routed to coordinator review.
++- **Scientific cross-field integrity (major)**: **Weak fit.** Disjoint fields in storage are not necessarily independent scientifically. For example, if Tablet A re-identifies a grass by deleting `SPAL` and adding `SPPA` while Tablet B adjusts `DISP` cover so total graminoid cover matches a field estimate or adds a note referencing the original `SPAL` entry, a field-level merge combines both edits automatically without noticing that the resulting species composition and notes contradict each other.
++- **Operational simplicity and maintainability (major)**: **Weak fit.** Requires maintaining explicit merge semantics for scalars, ordered or unordered `observers` lists, and keyed `species_cover` entries, plus storing and querying per-field provenance so coordinators can trace which submission produced each exported cell.
++- **Coordinator review queue volume (moderate)**: **Strong fit.** Automatically resolves non-overlapping edits (such as observer list fixes vs. species additions), reserving coordinator attention strictly for direct field-level collisions.
++- **Tablet payload and state footprint (minor)**: **Partial fit.** Tablets must retain full base snapshots of every editable visit across offline restarts to compute structured field deltas and explain partial-merge outcomes to field workers.
++
++#### Summary
++
++Minimizes coordinator review work by auto-combining non-overlapping field edits, at the cost of maintaining complex per-field merge and provenance rules that can silently combine scientifically coupled changes across different fields.
++
++## Selection
++
++**Chosen: Option 1 — Whole-Visit Revisions.**
++
++### Why It Wins
++
++Whole-visit revisions win on both **major** criteria—**scientific cross-field integrity** and **operational simplicity and maintainability**—while passing the no-silent-data-loss gate. In coastal vegetation surveys, species identifications, cover percentages, and field notes within a single plot visit are interpreted together as one ecological observation. Because automated merge rules cannot distinguish a harmless administrative edit from a scientifically coupled change across fields (and the HLD explicitly excludes automated botanical inference), treating the whole visit as the unit of revision guarantees that no exported visit contains an unreviewed combination of two different submissions. At a scale of 6,000 visits per season across 24 workers, the extra coordinator review volume from occasional concurrent edits to the same visit is a smaller operational risk than maintaining field-level merge heuristics and per-cell provenance.
++
++This decision turns on the HLD tenets:
++- *"Do not silently discard a submitted edit"* — every submitted visit revision is preserved intact as a node in the visit's revision graph.
++- *"Keep the path from a submitted observation to an exported value inspectable"* — every exported visit is either a single worker's complete submission or a coordinator's explicit whole-visit resolution citing the exact competing `revision_id`s it resolved.
++- *"Prefer workflows two coordinators can operate without a dedicated systems administrator"* — replaces custom three-way merge logic and per-field provenance schemas with a single active-head rule.
++
++### Downstream Obligations and Trade-offs
++
++Committing to whole-visit revisions forecloses automatic merging of disjoint field edits and establishes the following downstream requirements:
++
++1. **`tablet-sync` accommodations**:
++   - **Base revision tracking**: Each tablet must persist the server's `revision_id` (as `base_revision_id`) alongside every synced visit in local storage and include that `base_revision_id` (`null` for newly created visits) when submitting an offline edit.
++   - **Whole-visit submission payloads**: Tablets submit the complete visit payload on every edit along with a client-generated `idempotency_key` so retries after connection drops do not create duplicate revisions.
++   - **Forked-visit status handling**: When a submission response returns `status: needs_review` with multiple `competing_revision_ids`, the tablet must surface to the worker that their submission was recorded safely and is awaiting coordinator review alongside a competing edit, rather than presenting a single authoritative current state.
++
++2. **`review-export` accommodations**:
++   - **Whole-visit revision comparison screen**: The coordinator interface must fetch visits in `needs_review` status (`GET /visits?status=needs_review`), display the competing active head revisions alongside their revision history (`GET /visits/{visit_id}/revisions`) so coordinators can compare all fields side by side, and submit a single resolved whole-visit payload naming the `resolved_revision_ids` (`POST /visits/{visit_id}/resolutions`).
++   - **Export gating**: The Friday CSV export pipeline must include only visits in `status: current` (`GET /visits?status=current`), holding any `needs_review` visits out of the partner CSV and surfacing the count of unresolved visits to coordinators before export generation.
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..d2dce4b 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -5,37 +5,148 @@ prefix: REC
+ 
+ # Record Store
+ 
+-## Context
++## Context and Design Philosophy
+ 
+-This node owns visit persistence and the meaning of a current visit when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a catalog plot ID. Updates can arrive days after their starting state was fetched. The server must not treat arrival order as evidence that one worker's observations are more authoritative.
++This node owns visit persistence, revision lineage, and the definition of a current visit when independently edited copies arrive. A visit is identified by a client-generated UUID and refers to a catalog plot UUID. Because field tablets operate offline for up to 48 hours, updates can arrive days after their starting state was fetched. The server never treats arrival order as evidence that one worker's observations are more authoritative than another's.
+ 
+-Tablet-sync and review-export are not yet designed. Their contracts depend on the concurrency mechanism selected here. Neither the HLD nor the catalog contract selects that mechanism.
++A visit's scientific fields—observation date, observer list, species cover estimates, and notes—frequently carry cross-field scientific relationships (for example, re-identifying a species while adjusting its cover estimate and explaining the correction in notes). Because automated field-level merge rules cannot reliably detect scientific dependencies across fields, the record store treats each submitted visit as an indivisible whole-visit revision.
+ 
+-## Architecture
++## Revision Model and Lineage
++
++Every accepted submission or coordinator resolution creates an immutable **Revision** within a visit's history:
++
++- `revision_id` (server-assigned UUID)
++- `visit_id` (client-generated UUID)
++- `parent_revision_ids` (`[]` for an initial creation, `[base_revision_id]` for a normal edit, or `[rev_a, rev_b, ...]` for a coordinator resolution)
++- `source_type` (`worker_submission` | `coordinator_resolution`)
++- `author_id` (authenticated worker or coordinator ID)
++- `idempotency_key` (client-supplied UUID for deduplicating retries)
++- `received_at` (server UTC timestamp)
++- `payload`:
++  - `plot_id` (UUID referencing an existing plot in `site-catalog`, active or archived)
++  - `observation_date` (ISO-8601 date `YYYY-MM-DD`)
++  - `observers` (non-empty list of observer names)
++  - `species_cover` (list of `{ species_code, cover_pct }` entries, where `cover_pct` is a number in `0..100` and `species_code` is unique within the revision; total cover across species may exceed 100% due to canopy layering)
++  - `notes` (freeform text, may be empty)
+ 
+-The record store exposes authenticated submission, current-state retrieval, submission-history retrieval, and review-outcome operations. Persistence keeps original submissions, their authors, and server receipt times. A submission carries an idempotency key so a connection failure does not create another edit on retry.
++### Head Set and Visit Status
+ 
+-A visit's scientific fields include observation date, observer list, species cover estimates, and notes. Some edits are unrelated, such as correcting an observer name and adding a missing species. Other edits are related, such as revising a species identification and its cover estimate. The server cannot infer all such relationships from field names.
++For each `visit_id`, the record store tracks the **active head set**: all revisions of that visit that are not referenced in the `parent_revision_ids` of any subsequent revision.
+ 
+-The selected concurrency policy will define the remaining submission metadata and review operations. They are deliberately not specified yet.
++- **`current` (single head)**: When a visit has exactly one active head revision, that revision is the authoritative current state and is eligible for Friday CSV export.
++- **`needs_review` (multiple heads)**: When a visit has two or more active head revisions, all active heads are competing revisions awaiting coordinator review. No single revision is authoritative, and the visit is held out of export until resolved.
+ 
+-## Submission and Retrieval
++### Linear Advancement vs. Forking
+ 
+-Authenticate the submitting worker and validate field types and plot references before accepting a submission. Preserve the original payload separately from any later resolved or combined representation. A retry with the same key and identical payload returns the original acceptance result; reuse with a different payload is rejected.
++1. **Initial submission** (`base_revision_id: null` on a new `visit_id`): Creates revision $R_1$ with `parent_revision_ids: []`. Active head set becomes $\{R_1\}$ (`status: current`).
++2. **Fast-forward edit** (`base_revision_id` matches the sole active head $R_1$): Creates revision $R_2$ with `parent_revision_ids: [R_1]`. $R_1$ is superseded; active head set becomes $\{R_2\}$ (`status: current`).
++3. **Concurrent edit** (`base_revision_id` names an existing revision $R_1$ that has already been superseded by $R_2$, or the visit already has multiple heads): Creates revision $R_3$ with `parent_revision_ids: [base_revision_id]`. Active head set becomes $\{R_2, R_3\}$ (`status: needs_review`).
++4. **Concurrent initial submission** (`base_revision_id: null` when `visit_id` already exists): Treated as a competing root revision with `parent_revision_ids: []`, adding to the active head set (`status: needs_review`).
+ 
+-Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
++## Operations and Contracts
+ 
+-## Open Design Choice: Concurrent Visit Edits
++### 1. Submit Visit Revision (`POST /visits/{visit_id}/revisions`)
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++Authenticates the submitting worker, checks idempotency, validates payload structure and that `plot_id` exists in `site-catalog`, and records a new worker revision.
+ 
+-Two approaches remain credible:
++**Request Envelope:**
++```json
++{
++  "idempotency_key": "uuid",
++  "base_revision_id": "uuid | null",
++  "payload": {
++    "plot_id": "uuid",
++    "observation_date": "2026-10-14",
++    "observers": ["A. Rivera", "M. Chen"],
++    "species_cover": [
++      { "species_code": "SPAL", "cover_pct": 45 },
++      { "species_code": "DISP", "cover_pct": 20 }
++    ],
++    "notes": "Wrack line shifted inland since last visit."
++  }
++}
++```
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++**Response (`201 Created` or `200 OK` on idempotent replay):**
++```json
++{
++  "visit_id": "uuid",
++  "accepted_revision_id": "uuid",
++  "status": "current | needs_review",
++  "current_revision_id": "uuid | null",
++  "competing_revision_ids": ["uuid"]
++}
++```
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++- **Idempotency**: If `idempotency_key` matches a previously accepted submission with an identical request (`visit_id`, `base_revision_id`, and `payload`), the store returns the original acceptance response (`200 OK`) without creating a duplicate revision. If `idempotency_key` is reused with any difference in `visit_id`, `base_revision_id`, or `payload`, the store rejects the request (`409 Conflict`) and leaves stored state unchanged.
++- **Unknown base revision**: If `base_revision_id` is non-null and does not exist for `visit_id`, the store rejects the request (`422 Unprocessable Entity`).
+ 
+-## Downstream Contract Work
++### 2. Retrieve Visit State (`GET /visits/{visit_id}`)
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++Returns the current state of a visit (or `404 Not Found` if `visit_id` does not exist) and distinguishes a single authoritative state from unresolved competing revisions:
++
++- When `status` is `current`: returns `current_revision` (the full active head revision object) and `competing_revisions: []`.
++- When `status` is `needs_review`: returns `current_revision: null` and `competing_revisions` (the full revision objects for every active head, ordered by `received_at` then `revision_id`).
++
++### 3. List Visits (`GET /visits`)
++
++Returns visit summaries filtered by optional `status` (`current` | `needs_review`) and `updated_since` parameters so `tablet-sync` can fetch current visits for offline caching and `review-export` can query either the coordinator review queue (`status=needs_review`) or the exportable dataset (`status=current`).
++
++### 4. Retrieve Revision History (`GET /visits/{visit_id}/revisions`)
++
++Returns the complete list of immutable revisions for `visit_id` ordered by `received_at` (ties broken by `revision_id`), including all worker submissions and coordinator resolutions with their `parent_revision_ids`, `source_type`, `author_id`, `received_at`, and `payload`.
++
++### 5. Resolve Competing Revisions (`POST /visits/{visit_id}/resolutions`)
++
++Allows an authenticated coordinator to resolve a visit in `needs_review` status by supplying the reviewed competing head revision IDs and the resolved whole-visit payload (which may select one competing revision's payload verbatim or synthesize values after human inspection).
++
++**Request Envelope:**
++```json
++{
++  "idempotency_key": "uuid",
++  "resolved_revision_ids": ["rev_2_uuid", "rev_3_uuid"],
++  "payload": {
++    "plot_id": "uuid",
++    "observation_date": "2026-10-14",
++    "observers": ["A. Rivera", "M. Chen"],
++    "species_cover": [
++      { "species_code": "SPAL", "cover_pct": 45 },
++      { "species_code": "DISP", "cover_pct": 20 }
++    ],
++    "notes": "Combined observer list and retained corrected SPAL cover."
++  }
++}
++```
++
++**Response (`201 Created` or `200 OK` on idempotent replay):**
++Same envelope as `POST /visits/{visit_id}/revisions`, returning the newly created `coordinator_resolution` revision as `accepted_revision_id`.
++
++- **Head-set check**: `resolved_revision_ids` must contain at least two revision IDs and must match the visit's current active head set. If a new worker submission arrived while the coordinator was reviewing (causing the active head set to diverge from `resolved_revision_ids`), the store rejects the resolution with `409 Conflict` so the coordinator reviews the newly arrived revision before finalizing.
++- **Idempotency**: Follows the same idempotency rules as revision submission (`200 OK` on identical replay; `409 Conflict` on key reuse with different parameters).
++
++## Downstream Contract Obligations
++
++- **`tablet-sync`**: Retains the latest synced `revision_id` per local visit to send as `base_revision_id` on subsequent edits, supplies a stable `idempotency_key` across retries, and displays server status when a submission transitions a visit to `needs_review`.
++- **`review-export`**: Queries `GET /visits?status=needs_review` for the coordinator queue, renders revision comparisons using `competing_revisions` and `GET /visits/{visit_id}/revisions`, submits resolutions via `POST /visits/{visit_id}/resolutions`, and queries `GET /visits?status=current` to build the Friday CSV export while holding `needs_review` visits out of the CSV.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Concurrent visit edit model ([decision doc](decisions/concurrent-visit-edits.md)) | Whole-visit revisions with explicit base revision IDs and competing-head review | Field-aware three-way merge; last-write-wins by server receipt time | Scientific fields within a visit (such as species identity, cover percentage, and explanatory notes) have implicit cross-field dependencies that automated field-level merge rules cannot detect. Whole-visit revisions preserve each worker's complete submitted observation intact and route concurrent edits to human review without maintaining brittle merge heuristics. |
++| Lineage representation | Immutable revision DAG via `parent_revision_ids` and active head set | Mutable current row with separate conflict queue table | Representing both normal edits and coordinator resolutions as revisions in a single parent-pointer graph keeps the path from every submitted observation to the exported state directly inspectable and handles three-way or repeated concurrent edits uniformly. |
++| Stale resolution handling | Require `resolved_revision_ids` to match the entire active head set (`409 Conflict` if another revision arrived concurrently) | Partial resolution (supersede only the named subset of heads and remain in `needs_review`) | A coordinator synthesizing a whole-visit payload needs to see all competing edits together so scientific relationships across all concurrent submissions are considered at once. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ **Concurrency policy**: Selected whole-visit revisions over field-aware three-way merge so scientifically coupled field edits are never silently combined without coordinator review.
++
++### Deferred
++1. Whether `plot_id` can be changed on a subsequent revision of an existing `visit_id` (if a worker selected the wrong plot initially) or must remain constant after initial visit creation.
++2. Whether two concurrent submissions with identical payloads against the same `base_revision_id` should still create competing heads for review or coalesce automatically.
++
++## References
++
++- High-Level Design: `docs/high-level-design.md`
++- Site Catalog LLD: `docs/intent/site-catalog/site-catalog-design.md`

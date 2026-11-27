@@ -1,0 +1,12 @@
+Written: `docs/decisions/delivery-approach.md`, linked from the HLD's delivery decision row.
+
+**What a new reader gets from it:**
+
+- **Context** — the three candidate mechanisms, why none of them is implied by the board's model, and what goes wrong if the choice is wrong (an unnecessary connection tier, a bill and a provider dependency, or a freshness failure landing on coordinators mid-event).
+- **One honest disclosure** — the freshness goal was raised from fifteen seconds to one second *as part of this decision*. The doc says plainly that the target and the mechanism were settled together, so nobody later reads the one-second goal as a pre-existing requirement the sockets were fitted to. This is the part most likely to be exactly what you wanted a newcomer to understand.
+- **Decision Elements** — one gate (freshness, inherited from the Goals) that eliminates polling outright, plus four weighted criteria: recurring cost and provider coupling (major), operational burden, repeated read load, and blast radius of a delivery-path failure.
+- **Each option in its strongest honest form.** Polling is presented as genuinely simplest and cheapest, not a strawman — including its graceful degradation under a read-path failure. The hosted service is credited with being better than sockets on both operational burden and blast radius. The Analysis bullets then separate verdict from basis.
+- **Selection** — polling eliminated by the gate; sockets over hosted on the major criterion and the tenet that governs it. It names the honest cost: we are choosing the weaker option on two criteria on purpose. Then what the choice forecloses (a vendor path; polling is not kept as a fallback, and the choice reopens if the freshness goal is ever relaxed) and what it obliges each of the three unwritten nodes to own.
+- **A closing note** that the decision turns on the in-house tenet and is taken against the pull of least operational work.
+
+Two things still open from the last turn, unchanged by this: whether the one-second goal should stand as written, and whether the new tenet's wording is right or should be scoped tighter to realtime delivery. Say the word and I'll adjust, or I'll start on the change-store, delivery, and browser-sync nodes.

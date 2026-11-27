@@ -1,0 +1,65 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..fe75686 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache managed by 2Q replacement.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..0036c6f 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,46 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Cache Replacement
++
++The cache uses 2Q replacement so long one-use screening scans do not displace the comparison sheets editors return to. All replacement state belongs to the preview worker.
++
++Three queues hold cache state:
++
++- **A1in — probationary.** A FIFO queue of sheets admitted after one request. A completed sheet that is not admitted directly to Am enters A1in on first admission.
++- **Am — protected.** A queue of sheets that have earned a second request. A resident A1in sheet is promoted to Am on its next cache hit, and Am evicts its least-recently-used entry when it needs room.
++- **A1out — ghost history.** A FIFO list of keys evicted from A1in. It holds keys only, never JPEG data. A requested key found in A1out is admitted directly to Am, so a sheet evicted before its second use is still recognized as reused.
++
++A first-time screening scan flows through A1in and cannot displace the comparison set resident in Am. A comparison sheet leaves A1in after its second hit and stays protected until Am itself overflows. Because A1out holds only keys, recognizing reuse after an early eviction costs little memory relative to the 2 MiB sheet it describes.
++
++The 12 GiB data budget is divided between A1in and Am; A1out holds no JPEG data. The initial split reserves 25% (3 GiB) for A1in and 75% (9 GiB) for Am, and A1out is bounded to the entry count of A1in. The split is tunable from observed hit rates without changing the external interface, queue concurrency, or disk budget. A single sheet larger than A1in's share is admitted directly to Am.
++
++Admission and promotion follow this order:
++
++1. A cache hit in Am marks the entry most-recently-used.
++2. A cache hit in A1in promotes the entry to Am. If Am is full, the least-recently-used Am entry is evicted first.
++3. A request whose key is in A1out is admitted directly to Am. If Am is full, the least-recently-used Am entry is evicted first.
++4. Any other completed render is admitted to A1in. If A1in is full, the oldest A1in entry is evicted and its key is appended to A1out.
++5. Admission evicts enough JPEG data from A1in and Am first to keep total cached data within 12 GiB. Evicting from A1in records the key in A1out; evicting from Am does not.
++
++Queue membership, queue order, and ghost keys are private replacement bookkeeping. No other node reads them, pins entries, or depends on a sheet remaining resident.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q with probationary A1in, protected Am, and key-only A1out | LRU; frequency-based eviction with aging | 2Q shields repeatedly reused comparison sheets from one-use screening scans while keeping all bookkeeping inside the preview worker. LRU adapts quickly but lets long sequential scans evict the comparison set; aged frequency counters protect popular clips but add counter maintenance and can keep a previous project's favorites resident too long. No option changes the external interface, queue concurrency, or disk budget. |
++| Probationary/protected data split | Initial 25% A1in / 75% Am | Even 50/50 split; fixed split | Reserves most resident data for the comparison set while leaving enough probation for a screening scan to pass through without churning Am. The exact split is workload-dependent and tuned from observed hit rates. |
++| Ghost-history representation | Key-only A1out bounded to A1in's entry count | Full ghost entries; no ghost history | Keys are small relative to a 2 MiB sheet, and keeping them lets the cache recognize a reused sheet that was evicted before its second request. |
++| Replacement-state ownership | Private to the preview worker | Shared or inspectable replacement metadata | Keeps every replacement policy behind the fixed preview interface and preserves the worker as the sole owner of cache state. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Cache replacement policy: 2Q, accepting the probationary and protected queues plus key-only ghost history to protect comparison sheets during large screenings.
++
++### Deferred
++
++1. The initial 25% A1in / 75% Am split is a starting point; tune it from production hit-rate observations.
++2. Internal instrumentation for observing hit rates and comparing split settings is not yet designed.

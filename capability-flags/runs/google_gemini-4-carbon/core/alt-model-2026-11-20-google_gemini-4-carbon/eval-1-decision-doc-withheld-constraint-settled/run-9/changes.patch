@@ -1,0 +1,64 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..72e11ad 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup; lookup indexing and storage are private to this component.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..dbe4e00 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,41 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. Registry data arrives on approved USB media as a signed snapshot package containing newline-delimited JSON (NDJSON) records, a schema version, a snapshot date, and a signature manifest. Kiosks operate offline with 4 GB of RAM and must resolve lookups across approximately 90,000 records (snapshots up to 150 MB) within 250 ms.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`, where `record` carries the equipment serial number, description, calibration date, and due date. The certificates component depends only on this interface; SQLite file paths, schema, and connection handling remain private to the registry component.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++The registry maintains a local embedded SQLite database built on the kiosk during snapshot import and queried in read-only mode during lookups. No background server process or runtime network access is used.
++
++## Index Schema and Storage
++
++Each imported snapshot is materialized as a standalone SQLite database file in a registry-owned local data directory:
++
++- **`metadata` table**: single row storing `schema_version` and `snapshot_date`.
++- **`records` table**: `serial_number TEXT PRIMARY KEY`, `description TEXT NOT NULL`, `calibration_date TEXT NOT NULL`, `due_date TEXT NOT NULL`.
++
++Storing `serial_number` in normalized form as the `TEXT PRIMARY KEY` enforces uniqueness during import and serves lookups via a single B-tree point read without holding the 90,000-record dataset in memory. An active-database pointer file in the same directory identifies the currently active SQLite file.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import runs against a signed USB snapshot package in four stages:
++
++1. **Manifest and schema check**: Verify the signature manifest over the snapshot contents using the bundled public key and confirm the declared `schema_version` is supported before ingesting records.
++2. **Staged index build**: Create a temporary SQLite database file in the local registry directory. Stream NDJSON records line by line inside a single write transaction so memory usage stays bounded well below the 4 GB kiosk limit on snapshots up to 150 MB. Normalize each record's serial number before insertion; any duplicate normalized serial number violates the `PRIMARY KEY` constraint and aborts the import.
++3. **Durability and activation**: Commit the transaction, close the write handle, `fsync` the staged database file, atomically replace the active-database pointer to reference the new SQLite file, and swap the in-process read-only database handle so subsequent lookups observe the new snapshot as a whole.
++4. **Failure handling and cleanup**: If signature verification, schema validation, JSON parsing, record validation, or SQLite construction fails, delete the staged SQLite file, keep the previously active database active, and return a structured import error identifying the failure reason. Remove superseded database files once no in-flight lookup holds the prior handle.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize the requested `serial` by trimming leading and trailing whitespace and converting ASCII lowercase letters (`a`–`z`) to uppercase (`A`–`Z`). Internal whitespace and serial-number punctuation remain significant.
++
++Execute a parameterized read-only query (`SELECT serial_number, description, calibration_date, due_date FROM records WHERE serial_number = ?`) against the active SQLite connection alongside the active `snapshot_date`. Return `Found(record, snapshotDate)` when a row matches and `NotFound(snapshotDate)` when no row matches.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index rebuilt on each kiosk during snapshot import | On-site HTTPS directory; managed search service; direct scan or full in-memory map of raw NDJSON snapshot | Kiosks operate without a runtime network route, eliminating networked directory and managed search services. Compared with scanning a 150 MB NDJSON file per lookup or parsing 90,000 records into memory on startup, a local B-tree SQLite file keeps resident memory small on 4 GB kiosks, persists across restarts without re-indexing, and resolves point lookups well within 250 ms, trading per-kiosk index build work at USB import time for predictable local reads. |
++| Snapshot replacement | Build a separate staged SQLite file and atomically swap the active pointer | Replace rows in place inside a single SQLite database file | Building in a staging file avoids write-lock contention with concurrent lookups and ensures a failed or interrupted 150 MB import leaves the active database file untouched. |

@@ -1,0 +1,3 @@
+This decision trades off multiple criteria and will shape three major components. I can expand the Key Design Decisions entry with more context, or create a full decision doc that lays out the options, criteria, and reasoning at enough depth that a future reader can reconstruct the choice.
+
+Which would you prefer — an expanded paragraph in the HLD's Key Design Decisions, or a standalone decision doc in `docs/decisions/`?

@@ -1,0 +1,13 @@
+SHEET-TAX-001 (ubiquitous) — The sheets-view crate shall render the Tax surface as two structurally distinct typed bands: an accrual band named `Tax` under the frozen header [Sale ID, Lot ID, Jurisdiction, Tax Year, Amount, Lifecycle State], and a reserve-summary band named `Tax · Reserve Summary` under the frozen header [Jurisdiction, Tax Year, Accrued, Moved, Paid, Outstanding, Shortfall]. The reserve band is part of the Tax surface, not a fifth entry in VIEW_TABS (which is exactly [Positions, Open Lots, Realized, Tax], Tax fourth, before History).
+
+SHEET-TAX-002 (ubiquitous) — Every Tax-surface cell shall be an engine value; no cell in either band is a formula. Figures are kernel-exact and as-of-last-sync, carrying no GOOGLEFINANCE/live-price dependency.
+
+SHEET-TAX-003 (ubiquitous) — The accrual band shall contain exactly one row per supplied accrual, in input order; each row width equals the header width. Amount = signed dollar rendering of `applied_cents` (`-?{cents/100}.{|cents|%100 as 2 digits}`); when `applied_cents` is absent the cell is the empty string. Lifecycle State is the state discriminant only — one of `Accrued`, `Allocated`, `Moved`, `Paid` (payload fields ignored). Jurisdiction renders `Federal` or `State({code})`. Tax Year renders its integer.
+
+SHEET-TAX-004 (unwanted) — The accrual band shall never contain an among-data summary row: no blank/empty-first-cell row, no label row (e.g. `RESERVE SUMMARY`), no embedded copy of the reserve header, and no ragged row — so the range stays natively filterable/sortable end to end.
+
+SHEET-TAX-005 (ubiquitous) — The reserve band shall contain exactly one row per `(Jurisdiction, Tax Year)` AnnualRow, count and order matching the supplied rows. All five money columns shall be populated (never blank) with the same signed dollar rendering, taken verbatim from `accrued_cents`, `moved_cents`, `paid_cents`, `outstanding_cents`, `shortfall_cents` — sheets-view performs no tax arithmetic.
+
+SHEET-TAX-006 (ubiquitous) — Live tax-adjusted estimates live only on Positions, labelled `(est)`: `Est. Tax Rate` is a value rendering of the tax-written effective rate as `-?{ppm/10000}.{ppm%10000 as 4 digits}%` (e.g. Ppm(150_000) → `15.0000%`), written as a userEnteredValue so Sheets coerces it to the numeric fraction (rate/100 ∈ [0,1]); `Est. Unrealized Tax (est)` = `=G{r}*H{r}` and `Net Unrealized (est)` = `=G{r}*(1-H{r})`, both row-anchored to their own row r = index + DATA_START_ROW (2), never referencing another data row, alongside a pre-tax `Unrealized P&L` column.
+
+SHEET-TAX-007 (event-driven) — When a symbol has no effective rate, `Est. Tax Rate` shall render empty, degrading the post-tax columns to the pre-tax figure.

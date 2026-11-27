@@ -1,0 +1,3 @@
+Overkill. An inherited constraint settles it — the HLD's no-runtime-network tenet rules out the HTTPS directory and managed service outright, and the choice is contained to the registry node (certificates sees the same interface). The Decisions table row with that rationale is enough; a full doc would only earn its place if the no-network tenet itself were up for review.
+
+Still awaiting your call on the ten probe gaps and approval to move to EARS.

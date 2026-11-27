@@ -1,0 +1,5 @@
+I agree it clears the bar — a cold reader could plausibly ask "why not LRU, it's simpler?", and the queue-size split that gets tuned later is sized around this choice staying what it is. I've written it up.
+
+Written: `docs/intent/previews/decisions/eviction-policy.md`, with the three options laid out against the real criteria (protection from sequential screenings, bookkeeping cost, tuning burden, adaptation speed, stale-favorite risk) and 2Q winning on the major criterion at the deliberate cost of the moderate ones. The LLD's Decisions row now just points to it.
+
+One thing still open from before the decision-doc detour: I listed 9 edge-case gaps in the 2Q mechanics (queue ordering on reused-queue hits, victim selection once eviction falls back to the reused queue, whether "requested more than once" persists across eviction, the evict/concurrent-hit race, failed-render queue state, reused-queue-alone exceeding 12 GiB, hard-vs-soft size split, promotion-vs-eviction race, and the oversized-single-sheet case). Want me to fold any of those into the LLD now, or carry all of them forward as open questions into the EARS phase?

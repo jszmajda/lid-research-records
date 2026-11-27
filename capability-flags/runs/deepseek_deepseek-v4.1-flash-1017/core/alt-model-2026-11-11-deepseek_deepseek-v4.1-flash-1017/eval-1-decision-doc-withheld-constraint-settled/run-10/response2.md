@@ -1,0 +1,1 @@
+Overkill. The offline/no-network tenet already eliminates the HTTPS-directory and managed-service options, and the backend choice affects only the registry node—the certificate interface is unchanged. A Decisions & Alternatives row is enough; a full decision doc would add residue rather than help a cold reader re-run the judgment.

@@ -1,0 +1,10 @@
+I’d recommend keeping it as the `Decisions & Alternatives` row in `previews-design.md` rather than creating a standalone decision doc.
+
+The test I’d apply looks forward from the landed design rather than backward at how painful the debate was:
+
+1. **Blast radius stays inside one node.** By design, `review-api`, the `200`/`202`/`404` HTTP contract, the four-slot render queue, deduplication, and the 12 GiB cap are identical under LRU, aged frequency, and 2Q. No other component is sized around or coupled to this choice—if future production data ever points to a different policy, replacing it stays confined to the preview worker's private cache bookkeeping.
+2. **One table row already answers a cold reader's question.** A future reader of `previews-design.md` will reasonably ask *"why two queues instead of plain LRU or frequency counts?"*, and the `Decisions & Alternatives` row already gives the complete trade: LRU drops comparison sheets during long sequential screenings, aged frequency adds counter maintenance and lags when editors switch projects, and 2Q isolates one-off screening scans at the cost of two queues and a split parameter. A full `docs/intent/previews/decisions/` doc wouldn't preserve cross-system constraints that the rest of the architecture leans on—it would mostly expand that same three-way comparison into another file to maintain, diluting the signal of standalone decision docs when cross-cutting choices actually need one.
+
+The one reason to override that is team dynamics: if you expect people to re-litigate LRU vs. aged frequency vs. 2Q unless they can point to a standalone write-up scoring all three options against explicit criteria (scan resistance, project-switch adaptation, bookkeeping cost), I can draft `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from the table row—at the cost of carrying an extra doc for a worker-private policy.
+
+Would you like to stick with the `Decisions & Alternatives` row (my recommendation) or add the standalone decision doc? Whenever you're ready, let me know your call on the Phase 2 edge-case items (1–7) from above as well so we can finish `previews-design.md`.

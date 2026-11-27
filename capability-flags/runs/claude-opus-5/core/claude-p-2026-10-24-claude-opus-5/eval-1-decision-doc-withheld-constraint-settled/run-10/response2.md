@@ -1,0 +1,9 @@
+Overkill, I think — and the reason is the same one from my last message rather than a new one.
+
+The test for a decision doc runs from the landed state looking forward, not from the deliberation looking back: would a cold reader of the result re-litigate this without the full options and criteria laid out? Here they wouldn't. They'd read the HLD's two no-network tenets, then read "local embedded SQLite index," and the choice would look like the only thing it could have been. A doc would spend three sections reconstructing a comparison whose outcome one inherited constraint already fixed — and a reader who found it would reasonably wonder what they were missing, since the competing options can't actually compete under those tenets.
+
+That the deliberation was hard isn't the signal. Plenty of choices are contested in flight and read as native once they land; this is one. The genuinely non-obvious part — SQLite rather than an in-memory map or a sorted flat file, which the 150 MB ceiling and 4 GB kiosks decide — is captured in its own row, and that's the row a cold reader would actually stop on.
+
+One thing would change my answer: if the real live question isn't *which backend* but *whether kiosks stay fully offline at all*. That decision has credible options traded against more than one criterion — update latency and central-correction turnaround against the isolation the production area buys you — it sits at the HLD, and both of the options you weighed yesterday are live under it. If going back and forth yesterday was really you probing that, say so and I'll draft `docs/decisions/kiosk-offline-lookup.md` at the project level. Otherwise the row stands and we're clear to proceed.
+
+Still waiting on your triage of probe items 1–7, and on whether item 1 may extend the result type into certificates' territory.

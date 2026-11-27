@@ -1,0 +1,10 @@
+I've finished the record-store LLD around whole-visit revisions (Phase 2 — HLD and EARS specs were already coherent with this, no drift found). Changes:
+
+- **`docs/intent/record-store/record-store-design.md`**: resolved the open choice. Added the submission envelope (visit ID + base revision ID + full payload), the current-revision/competing-revision mechanics (auto-promote when base matches current; stale base → competing revision + `unresolved` flag), the retrieval shape, and a Resolution section (coordinator selects a revision or submits a reconciled one; set-aside revisions are kept, never deleted). Recorded the choice as a Decisions & Alternatives row, with your stated rationale (bigger review queue over merge rules that could cross scientific relationships unnoticed).
+- **`docs/high-level-design.md`**: updated record-store's status to reflect the selected policy, and reworded the tablet-sync/review-export dependency note from "unresolved choice" to "deferred until work resumes."
+
+One thing the skill asks me to offer rather than decide: this choice traded real tradeoffs (review workload vs. merge-rule risk) and tablet-sync/review-export are about to be sized around it — that profile qualifies for a full decision doc, not just the table row I wrote. Want one at `docs/intent/record-store/decisions/concurrency-policy.md`, or is the table row enough?
+
+Also flagging for your review: the LLD still leaves revision IDs, timestamps, and the exact resolution API shape informal/prose rather than a concrete schema — fine for now since tablet-sync/review-export are on hold, but worth tightening before either resumes.
+
+Let me know if the design update looks right (or what to adjust) before I stop here — per your plan, EARS/tests/code for this wait for tablet-sync and review-export.

@@ -1,0 +1,31 @@
+**Pre-implementation — clean intent tree, with an unrecorded tenet tension and premature `[x]` spec markers.**
+
+**Scorecard**
+- ✓ HLD & tree structure — clear problem and architecture rationale, node-as-folder layout, and `parent:`/`prefix:` frontmatter with zero implementation bleed into the HLD
+- ✓ Mutation hygiene — crisp, present-tense docs written to read cold, with strong rationale on the decisions already recorded
+- ✗ Arrow completeness — all 8 EARS specs are marked `[x]` implemented, while no tests or code exist in the repository yet
+- ✗ Tenet & decision alignment — `job-queue`'s in-memory-only queue drops accepted jobs on unattended restarts against HLD promises, with no Decisions row recording the trade-off
+- ⚠ Cross-node & spec coverage — `suspect` printer state and staff/UI ownership span nodes without shared definitions, and several LLD behaviors lack EARS specs
+- ✓ Mode fit — Full mode matches a focused, greenfield single-service repository
+
+The design tree is well-structured, readable cold, and disciplined about keeping SQLite, polling intervals, and slug formats downstream of the HLD; the highest-value next step is resolving the in-memory queue tension against your reliability tenet (and resetting spec status markers to `[ ]`) before moving into tests and code.
+
+**Findings (9 total · 4 high · 4 medium · 1 low)**
+- **F1 (high):** `job-queue-design.md` holds accepted jobs strictly in process memory so overnight OS updates or power blips drop queued work, working against HLD Tenet 1 ("A submitted job is a promise: members should be able to upload and walk away") and Goal 1 ("Evening upload, overnight print, morning pickup — with no member present") with no recorded exception · *tenets capture forward-looking preference* (downstream designs lean the way the HLD's tenets and goals say to lean, or explicitly record the exception)
+- **F2 (high):** Keeping `job-queue` in process memory sits in `job-queue-design.md § Architecture` prose with no `Decisions & Alternatives` row naming what persistence option was rejected or why losing accepted jobs on restart was accepted · *docs carry current intent, written to be read cold* (choices a cold reader would question or try to reverse carry their rejected alternatives and accepted cost in Decisions & Alternatives)
+- **F3 (high):** All 8 specs in `job-queue-specs.md` and `printer-registry-specs.md` carry `[x]` implemented markers (wrapped in backticks), while the repository has no tests or implementation code yet · *canonical arrow shape — with a recursive design layer* (intent walks `HLD → LLDs → EARS → Tests → Code`, with spec markers reflecting whether tests and code actually exist)
+- **F4 (high):** `job-queue-design.md` and `QUEUE-003` mark a printer `suspect` when a dispatch attempt is rejected or times out, but `printer-registry` (which owns printer state and dispatch eligibility) never mentions `suspect`, whether it pauses `QUEUE-002` dispatches, or how it clears · *intent attaches at the lowest node that dominates it; cascade within a segment, pause across* (state that governs behavior across two sibling segments needs coordinated ownership and cascade)
+- **F5 (medium):** Several LLD behaviors have no corresponding EARS specs — class-existence checks on job acceptance, `staff` ahead of `member` priority ordering, content-hashed G-code reuse, and 90-day slug recycling in `job-queue`, plus printer registration and routine reachable-printer state transitions in `printer-registry` · *effective intent-tree alignment* (behaviors described in an LLD trace to testable EARS specs so intent does not drift unnamed)
+- **F6 (medium):** The HLD Approach and both leaf LLDs rely on a shared web UI and a `staff` vs. `member` distinction (queue reordering, priority, registering and retiring printers), yet no node owns the UI surface or specifies how staff authority is established · *LLDs close enough of the solution space* (designs close enough of the edges that independent sessions land on compatible implementations without guessing)
+- **F7 (medium):** `QUEUE-001` scopes the 64 MB upload limit with "When a member uploads..." in a segment that distinguishes `staff` and `member` roles, even though the bed-size and disk-safety rationale applies to any upload · *scope disambiguation* (each spec's trigger states its true scope so grep-level readers do not infer unintended role carve-outs)
+- **F8 (medium):** `docs/high-level-design.md § Tenets` uses an unordered bullet list even though Tenet 1 ("A submitted job is a promise...") and Tenet 3 ("The mini-PC is modest hardware; the service stays small") pull in opposite directions on durability vs. simplicity · *tenets capture forward-looking preference* (ordering tenets by priority tells future sessions which preference wins when two conflict)
+- **F9 (low):** `CLAUDE.md` declares mode and version cleanly but carries only a one-line skill pointer rather than the standard v1.4.0 LID guidance block (bug-fix arrow rule, cold-authoring rule, memory-vs-intent boundary, and `@spec` entry-point conventions) · *minimum surface, maximum discipline* (keeping the standard instruction-file directives intact gives every session and harness consistent arrow rules)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/job-queue/job-queue-design.md`, `docs/intent/job-queue/job-queue-specs.md`, `docs/intent/printer-registry/printer-registry-design.md`, `docs/intent/printer-registry/printer-registry-specs.md` (every file in the repository)
+- Enumerated: 1 HLD, 2 leaf LLDs, 2 spec files, 8 EARS specs (`QUEUE-001`–`QUEUE-005`, `REG-001`–`REG-003`), 5 `Decisions & Alternatives` rows, 0 arrow-overlay files (`docs/arrows/` absent)
+- Linkage & implementation check: 0 test files, 0 source files, 0 `@spec` annotations
+
+Want me to walk through the findings in detail, focus on the high-priority items first, or work through a specific finding together (such as F1/F2 on queue persistence or F4 on the `suspect` state)?
+
+If you also have broader questions about using LID as `printfarm` moves from specs into code — walking Phases 4–6 for the first implementation pass, deciding when a shared concern like the web UI earns its own design node, or keeping segments coherent — I can help with those too.

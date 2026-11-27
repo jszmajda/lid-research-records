@@ -1,0 +1,19 @@
+2Q is settled and recorded. All three candidates kept every change inside the preview worker's private cache, so this stayed within the previews segment; the choice is recorded as a row in the previews LLD's new Decisions & Alternatives table (no separate decision doc — nothing outside this segment is sized around it). Per your "go ahead and finish," I ran the doc phases end-to-end and consolidated the stops here.
+
+**Phase 1 — HLD** (`docs/high-level-design.md`): the Previews architecture line now states the 2Q policy and its protective purpose; the "eviction policy remains open" marker is gone, and the goal that was phrased for a multi-policy world ("for every eviction policy") now reads "regardless of cache replacement behavior."
+
+**Phase 2 — previews LLD** (`previews-design.md`): "Private Cache" now specifies 2Q — short-term FIFO for first-use sheets, main LRU queue for re-referenced sheets, byte-measured budget split (initial 25% / 75%, flagged as a tunable open question). The Decisions & Alternatives row records why 2Q won over LRU (sequential screenings evict the comparison working set) and aged-frequency (counter maintenance, lag on project switches).
+
+**Phase 3 — EARS** (`previews-specs.md`): five new specs, PREVIEW-006–010 — admission to the short-term queue, short-term eviction that never touches main-queue entries, promotion on re-reference, main-queue LRU eviction, main-queue recency marking. PREVIEW-001–005 are unchanged; interface, dedup, budget, and failure semantics are policy-independent. Consistency report: coverage complete (each LLD 2Q rule maps to a spec; the 12 GiB bound stays PREVIEW-004), no contradictions, scopes carried in the WHEN clauses, lines stand alone under grep. Semantic check: HLD/LLD/specs aligned; review-api segment untouched by design.
+
+**Phase 4 — the probes found forks I need you to resolve.** I ran the LLD gap probe and a blind divergence probe on the new spec lines. The genuine ones:
+
+1. **Concurrent misses** (PREVIEW-006/008): two editors request the same uncached sheet and share one 202 job. On completion, does it admit to short-term like any first render (my drafted reading), or does the second request count as a re-reference, admitting it straight to main? The immediate-main reading protects comparison pairs faster.
+2. **History after eviction** (LLD-level): a sheet evicted from short-term, then requested again, re-renders. First-use again (drafted reading), or does the re-request admit it to main? Classic 2Q adds a metadata-only ghost queue to catch exactly this case.
+3. **Hard shares vs. the 12 GiB total** (PREVIEW-004/007/009): are queue shares hard caps — main evicts even while short-term sits nearly empty — or targets with 12 GiB as the only hard bound? Relatedly, what happens to a single sheet larger than a queue's share?
+4. **Eviction quantity** (PREVIEW-007/009): the specs name one victim; should it be evict-until-the-incoming-fits given sheet sizes are typical-not-guaranteed uniform?
+5. **Promotion recency** (PREVIEW-008/010): when a sheet moves to main, does the promoting request mark it MRU there, and does short-term usage history count toward main-queue recency?
+
+Lower-priority gaps the probes surfaced (promotion-vs-eviction races, evicting a sheet mid-response, concurrent admissions against the 12 GiB check, runtime split rebalancing): tell me which to pin in the LLD now and which to leave as open questions — some resolve themselves once you answer 3 and 4.
+
+Nothing is implemented yet, so all ten specs sit as active gaps; tests-first applies when coding starts. Which way on 1–5?

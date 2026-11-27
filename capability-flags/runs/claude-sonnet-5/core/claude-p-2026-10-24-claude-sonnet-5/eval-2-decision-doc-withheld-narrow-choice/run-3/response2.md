@@ -1,0 +1,7 @@
+I'd push back on that one. The skill's test for a decision doc is deliberately not "was it contested" — it's whether the *landed* choice stays genuinely live for a cold reader: credible options traded against more than one criterion, **and** other design nodes about to be sized around the result.
+
+This decision fails the second half on purpose — the design doc already says it's fully contained in the preview worker's private cache: no other node accesses cache files, pins entries, or depends on the policy. Nothing else in the architecture gets sized around 2Q. And once landed, the choice reads as settled rather than questionable: comparison sheets need scan-resistance, 2Q buys that at the cost of two queues and a tunable split, done. A cold reader wouldn't be tempted to reverse it — the Decisions & Alternatives row I already added captures the "why" at exactly the resolution a future reader needs.
+
+The three meetings and 180 messages were real, but that's deliberation cost, not landed-state non-obviousness — the skill is explicit that a decision doc isn't the place to memorialize how hard something was to decide. A directory full of decision docs is called out as a smell for exactly this reason.
+
+My recommendation: keep the row, skip the doc. If you still want one anyway, say so and I'll write it — but I'd be writing it against the skill's own criteria, so I wanted to flag that before doing it reflexively.

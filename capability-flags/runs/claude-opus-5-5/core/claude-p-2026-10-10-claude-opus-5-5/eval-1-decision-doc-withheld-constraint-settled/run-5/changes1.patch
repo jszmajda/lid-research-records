@@ -1,0 +1,74 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..dc56dc2 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup, served from a local embedded SQLite index that each kiosk builds from the snapshot.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..3319767 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -11,14 +11,52 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of how lookup is implemented. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index building, and lookup all belong to this node. Lookups are served from a local embedded SQLite index file on the kiosk's own disk. The SQLite library ships inside the GaugeDesk installation; nothing else is installed on the kiosk and no service runs beside the application. Each kiosk builds its own index from the snapshot it is given, so the index file format, its location, and its schema are private to this node and can change without a new snapshot format.
++
++## Index
++
++One index file holds exactly one snapshot. It contains:
++
++- A records table keyed by normalized serial number, carrying the equipment description, calibration date, and due date. The serial number is the table's primary key, so a lookup is a single key probe and a second record with the same serial cannot be stored.
++- A single-row snapshot table carrying the snapshot date and schema version.
++
++Because the snapshot date lives in the same file as the records it describes, a lookup result can never pair records from one snapshot with the date of another.
++
++At most one index file is active at a time. The active index is opened read-only; nothing in the kiosk application writes to it after activation.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Import runs in a fixed order, and each step must succeed before the next begins:
++
++1. Verify the signature manifest against the bundled public key, and verify the snapshot's record file against the manifest. No record is parsed before this succeeds.
++2. Reject the snapshot if its schema version is unsupported.
++3. Build a new index file in a staging location on the kiosk's local disk, never on the USB media. Every record is normalized as a lookup would normalize it and inserted in a single transaction. A malformed record or a duplicate serial number aborts the build.
++4. Check the finished staging index: SQLite's integrity check passes and its record count equals the number of records read from the snapshot.
++5. Flush the staging index to disk, then activate it by atomically replacing the active index file. Lookups started before the replacement finish against the previous index; lookups started after it use the new one.
++
++A failure at any step deletes the staging file, leaves the active index untouched, and reports which step failed and why (bad signature, unsupported schema version, the duplicated serial number, the line number of a malformed record, or insufficient disk space). Lookups continue to be served from the active index throughout an import, whether it succeeds or fails.
++
++The staging index and the active index exist side by side until activation, so an import needs free disk space for a second index. A staging file left behind by an interrupted import (power loss, removed media) is deleted at the next startup; it is never activated.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Probe the records table by the normalized serial and read the snapshot date from the same index file. Return the snapshot date even when no matching record exists.
++
++A primary-key probe over 90,000 records touches a handful of index pages, which keeps lookup far inside the 250 ms goal on a 4 GB kiosk without loading the registry into memory.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Lookup backend | Local embedded SQLite index on each kiosk | On-site HTTPS directory; managed search service | Kiosks have no network route and every lookup must complete from files on the kiosk. Both alternatives put a network call in the lookup path. The cost accepted is that every kiosk validates and rebuilds its own index for each snapshot. |
++| Where the index is built | On the kiosk, from the signed newline-delimited JSON records | Ship a prebuilt index file inside the snapshot | The kiosk only trusts records it has verified and parsed itself, and the snapshot format stays independent of the index schema. Costs import time on each kiosk. |
++| How a new snapshot replaces the old one | Build a separate index file, then atomically replace the active file | Replace the rows inside the active index in one transaction | The active file is never opened for writing, so an interrupted or failed import cannot damage it. Costs temporary disk space for a second index. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++1. Whether two snapshot records whose serial numbers differ only by letter case or surrounding whitespace count as duplicates.
++2. What `findBySerial` returns on a kiosk that has no active snapshot, given that both result types carry a snapshot date.
++3. Whether a validly signed snapshot older than the active one may be imported.

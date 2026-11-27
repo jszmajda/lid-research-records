@@ -1,0 +1,7 @@
+My honest read: no, and here's the bar. A full decision doc is for a choice that stays **live for a cold reader** — credible options traded across more than one criterion *and* other design nodes about to be sized around the result. This one is node-local: LRU, aged-frequency, and 2Q all stay inside the preview cache, and nothing outside the previews segment is sized around the result. However long and loud the debate ran, node-locality puts it below that bar, so the Decisions row is the sanctioned record — it already carries the alternatives and the rationale a cold reader needs. A doc here would mostly embalm the argument rather than the decision, and tends to read as re-litigation of a choice the design has already settled.
+
+That said, you're the judge and you're always right — I'll warn and honor. If you still want it, I'll create `docs/intent/previews/decisions/2q-eviction.md` from the decision-doc template (context, criteria, the three options, selection) and link it from the Decisions row. Want me to write it?
+
+Two things from before are still open, so I won't proceed until you rule:
+- **Edge-case gap triage** — my recommendation stands: resolve 1–4 and 7 in the LLD now; defer 5, 6, 8, and the pre-existing 9–12 as open questions. Say "your recommendation" to accept, or give me your own split.
+- **Phase 2 approval** — do you approve the LLD as the Phase 2 output so I can proceed to Phase 3 (EARS)?

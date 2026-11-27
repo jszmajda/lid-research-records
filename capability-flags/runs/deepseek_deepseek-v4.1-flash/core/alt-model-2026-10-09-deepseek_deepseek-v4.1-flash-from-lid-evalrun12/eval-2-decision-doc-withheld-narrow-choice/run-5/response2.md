@@ -1,0 +1,5 @@
+No — I'd record it as the Decisions & Alternatives row, which is already in the LLD. The bar for a full decision doc is "stays genuinely live for a cold reader *and* other nodes will be sized around the result." This one is node-private: the HLD says no other node reads eviction metadata, pins entries, or depends on warmth, so nothing downstream leans on the competing options. A doc would memorialize a debate, not carry intent any reader needs. Length of the argument doesn't change that test.
+
+If the worry is that the table's rationale is thin, I can expand that row's Rationale to spell out the criteria the three options traded against (project-switch adaptation, scan resistance, bookkeeping) so no one re-litigates it. Say the word and I'll do that instead.
+
+Otherwise, I still need your Phase 2 review: the LLD as written, plus triage on the four edge-case gaps (no-ghost re-request, split enforcement timing, concurrency model, degenerate split), before I move to Phase 3 (EARS specs).

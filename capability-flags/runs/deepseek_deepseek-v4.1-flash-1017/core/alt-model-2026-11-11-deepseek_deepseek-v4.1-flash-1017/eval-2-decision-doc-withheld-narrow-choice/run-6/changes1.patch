@@ -1,0 +1,60 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..35fefea 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with worker-private eviction bookkeeping.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..b03bf7b 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -17,10 +17,40 @@ Use a FIFO render queue with at most four active rendering jobs. Cache entries a
+ 
+ ## Rendering and Deduplication
+ 
+-Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry.
++Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry. A completed render is admitted to the cache before its deduplication entry is released; the transition is serialized so a request either shares the pending job or finds the admitted sheet.
+ 
+ ## Private Cache
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++### Eviction Policy
++
++The cache uses 2Q eviction, measured in JPEG bytes rather than entry count. Two queues live inside the worker:
++
++- **A1in** — a FIFO queue for sheets on their first stay in the cache. Its target is 25% of the 12 GiB budget (3 GiB).
++- **Am** — an LRU queue for sheets that have shown reuse. It holds the remaining 75% (9 GiB).
++
++A newly rendered sheet enters the front of A1in. The A1in target and the 12 GiB limit are checked against total cached bytes including the incoming sheet. Before admission, entries at the back of A1in are evicted until A1in would be within its target; if total cached bytes would still exceed 12 GiB, entries at the back of Am are evicted until admission fits. A sheet larger than the A1in target but within 12 GiB is admitted directly to the front of Am; a sheet larger than 12 GiB is returned from temporary output without being cached. Am may use capacity that A1in does not occupy, but the 12 GiB byte limit is hard.
++
++Each cached sheet belongs to exactly one queue, and promotion moves its bytes rather than duplicating them. A request that arrives while a sheet's render is still pending does not promote it; a later request that finds the admitted sheet in A1in moves it to the front of Am. A request served from Am moves the sheet to the front of Am. A sheet being delivered is pinned until its response completes and is not chosen for eviction during that window. A sheet evicted from Am loses its reuse history and re-enters A1in on its next render.
++
++A one-off sequential screening therefore churns only A1in, while a comparison sheet requested again is held in Am and survives later scans. The 25/75 split is an internal worker constant, tunable without changing the preview interface. All queue membership, ordering, promotion, and eviction bookkeeping is private to this worker.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q with an A1in FIFO queue and an Am LRU queue | LRU; frequency-based eviction with aging | 2Q separates first-stay sheets from reused sheets, so a long sequential screening churns A1in without displacing comparison sheets held in Am. LRU adapts fastest and has the lowest bookkeeping but lets scans evict useful sheets; aged frequency retains popular clips but adds counter maintenance and keeps stale favorites longer. |
++| Eviction variant | Two-queue 2Q without a ghost history | Full 2Q with an A1out ghost queue | A ghost queue adds a third structure and another tuning parameter. Promotion on a second in-cache request protects actively reused sheets with less bookkeeping, all of it private to the worker. |
++| Queue split | 25% A1in / 75% Am, measured in bytes | Fixed entry counts per queue; other byte ratios | Bytes are the unit of the 12 GiB bound, and sheets vary in size. Reserving most capacity for Am favors the reused sheets the policy exists to protect. |
++| Eviction order | Drain A1in first, then Am | Global LRU across both queues; drain Am first | Draining A1in first keeps first-stay scans from consuming Am capacity while preserving FIFO behavior within A1in. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Eviction policy — 2Q, chosen over LRU and aged frequency.
++
++### Deferred
++
++1. The 25/75 split is an initial value to validate against pilot access traces; adjust it if comparison sheets are evicted before their second request.

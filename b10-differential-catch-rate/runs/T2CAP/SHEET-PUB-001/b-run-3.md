@@ -1,0 +1,15 @@
+PUB-REPUB-001 (Ubiquitous) The system shall publish the view tabs and refresh marks in ONE serialized republish→settle loop on a single thread of control: `Publisher::republish_then_settle` republishes all supplied tabs, then reads the price cells back; every `ReadPricePass` in a cycle shall occur after every `batchUpdate` of that cycle, never inline with or before the formula write.
+
+PUB-REPUB-002 (Event-driven) When any live cycle runs — TUI connect, TUI refresh (manual `[r]`, the ambient auto-refresh, or the post-submit refresh after a confirmed durable append closes the entry composer), or the headless summary — the system shall run the publishing cycle: load → replay with prior cached marks → render five bands (Positions, Open Lots, Realized, Tax accruals, Tax reserve summary, in that order) → republish_then_settle → cache marks → reduce trading-day key → re-replay with this run's marks. Live wiring passes `SettleConfig::default()` (max_polls = 8) and `iso_date(as_of)` as the stale-banner timestamp.
+
+PUB-REPUB-003 (State-driven) While the entry composer is open, the ambient auto-refresh shall be suppressed and deferred to the first tick (POLL_TICK = 1s) after it closes; the help overlay shall not suppress it. The auto-refresh clock shall advance only when the refreshed connection is Live.
+
+PUB-REPUB-004 (Event-driven) When republish begins, the system shall acquire the runtime-owned advisory write-lock exactly once BEFORE any workbook mutation and release it when republish returns; the settle read shall run after release, so the lock guards only the mutating half.
+
+PUB-REPUB-005 (Unwanted) If the advisory lock is held by another holder (or acquisition errors), republish shall write nothing, return `published: false` with the stale set unchanged, and not banner — a non-destructive refusal retried next sync. The settle pass shall still run.
+
+PUB-REPUB-006 (Ubiquitous) Each tab shall be rewritten as one atomic `batchUpdate` from DATA_START_ROW = 2, truncating the residual tail to the exact row count; row 1 (the frozen typed header) is never rewritten. Republish shall idempotently reassert `workbook_tab_order()`; an order failure sets `published: false` without flagging any tab stale.
+
+PUB-REPUB-007 (Unwanted) If a tab's `batchUpdate` fails, that tab shall be flagged stale, `published` shall be false, a best-effort banner `"STALE — last sync {ts}"` written, and the tab retried next sync (success clears the flag). If the banner write also fails, the stale flag shall persist and the TUI remain the staleness surface.
+
+PUB-REPUB-008 (Ubiquitous) The settle pass shall be keyed only on open-position symbols (`total_qty != 0`), carrying prior good marks forward; a read-back transport error shall propagate as `ViewError`/`CycleError::View`, publishing no marks and leaving the caller's prior cache intact. Published tabs keep the pre-settle render; the post-settle re-replay updates only the held outcome.

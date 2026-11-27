@@ -1,0 +1,13 @@
+**Overkill — no decision doc.** I applied the earns-its-place test when I recorded the choice last turn; here's the reasoning, so you can overrule it if you disagree.
+
+The test is run from the *landed* state, not from how hard the choice felt. Once the design lands as a local embedded SQLite index, a cold reader has the HLD in front of them: *"no runtime network access is permitted,"* *"kiosks have no network route during normal operation,"* and the non-goal barring cloud services. Those are inherited constraints, and they eliminate the on-site HTTPS directory and the managed search service outright — SQLite is the only admissible option, so it reads as native, not as something a reader would question or try to reverse. It also affects only its own node: you noted for every option that the certificate interface/result stays unchanged and that "all of that stays inside the registry component." Two of the three do-not-offer conditions apply.
+
+The "went back and forth" is the symptom the heuristic is built to defuse: a long debate is **not** the test, and the skill says not to offer a doc for such a choice "however long the debate ran," precisely because people offered a doc tend to say yes whether or not they need it. The heuristic's own three outcomes place *"an inherited constraint eliminated the rest"* at the **Decisions row** level, not the doc level. A full doc here would memorialize a choice the HLD already forces — the residue the *docs carry current intent* tenet strips — and a directory full of decision docs is a smell.
+
+What the choice does earn is the row I already added to `docs/intent/registry/registry-design.md`: it names the two rejected options and the offline-tenet rationale, so a cold reader wondering "why not a centrally maintained index or richer search?" gets a one-line answer. That's the right granularity — a reader's "why this?" settled by a line, not a re-litigable trade-off. I made no file changes this turn; there's no doc to write.
+
+That's my assessment, and the call is yours to override — if you want a doc regardless, I'll add it, with the caveat that it would document a settled constraint rather than a live trade-off.
+
+---
+
+We're still at the **Phase 2 stop**. I have not drafted the EARS updates (Phase 3), tests, or code, and have not cascaded into the certificates segment. Before I proceed I still need your **numbered feedback on the LLD** and your **triage of the five edge-case gaps** (fix each in the LLD now vs. defer as an open question) — I've deliberately not answered those for you. Approve, and I'll move to Phase 3; tell me what to change above and I'll revise in place first.

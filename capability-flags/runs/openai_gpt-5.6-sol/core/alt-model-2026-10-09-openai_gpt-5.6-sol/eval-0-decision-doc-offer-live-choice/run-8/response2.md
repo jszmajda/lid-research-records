@@ -1,0 +1,1 @@
+I’ll add a project-level decision document that lets a cold reader reconstruct the choice from the operating scale, cost/coupling goals, and reliability obligations, then link it from the HLD. I’ll keep implementation details open for the three node designs rather than deciding their mechanisms here.

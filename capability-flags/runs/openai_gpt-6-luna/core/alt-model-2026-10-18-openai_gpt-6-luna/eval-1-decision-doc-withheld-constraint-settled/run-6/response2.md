@@ -1,0 +1,3 @@
+A full decision doc would be overkill here. The decision-doc test is whether a cold reader would need the full tradeoff analysis to understand or reconsider the choice. Given the kiosks’ no-network constraint, the HTTPS directory and managed service aren’t viable for normal lookups; the HLD row captures why SQLite fits and what it obligates the registry to maintain locally.
+
+The fact that the options took time to compare doesn’t by itself call for a decision doc.

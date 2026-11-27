@@ -1,0 +1,11 @@
+I recommend **staying with the `Decisions & Alternatives` table row** in `previews-design.md` rather than adding a standalone decision doc.
+
+The test is what a cold reader of the **landed** system needs going forward, not how hard the debate was to settle:
+
+1. **The choice is strictly private to `previews`.** Neither `review-api`, the `200`/`202`/`404` HTTP interface, the 4-slot render queue, nor the 12 GiB disk cap changes or sizes itself around 2Q. No other design node leans on this decision.
+2. **One row settles the "why not simpler LRU?" question.** A future maintainer reading `previews-design.md` *will* wonder why the cache maintains two queues instead of plain LRU, and the table row answers that directly: sequential screenings flush single-queue LRU, aged frequency counters add ongoing maintenance and hold onto yesterday's clips after a project switch, and 2Q isolates screening scans while aging out inactive comparison sets.
+3. **Deliberation history doesn't belong in the docs either way.** Even in a full decision doc, the three meetings and 180-message thread would be stripped so the doc reads cold in the present tense—leaving roughly the same three options and tradeoffs the table row already captures, at the cost of an extra file to keep coherent with `previews-design.md`.
+
+The one case for overriding this is social rather than architectural: if you expect teammates who weren't in the room to re-litigate 2Q vs. LRU/aged-frequency when tuning the pilot, and want the explicit criteria and per-option analysis written down so they can re-run the judgment without reopening the thread. If you still want one despite the extra doc overhead for a single-node policy, I can draft `docs/intent/previews/decisions/cache-eviction-policy.md` and link it from the table row.
+
+Would you like to keep just the `Decisions & Alternatives` row (recommended) or add `docs/intent/previews/decisions/cache-eviction-policy.md`—and how would you like to triage the Phase 2 open questions (1–7) above?

@@ -1,0 +1,3 @@
+Written up at `docs/decisions/delivery-transport.md`, linked from the HLD's Key Design Decisions row. It lays out the three options with strongest-honest-representation descriptions, the four elements that actually drive the choice (latency, recurring cost/vendor coupling, operational burden, and fit with the connectivity-visibility tenet), and why self-hosted WebSockets is the only option that doesn't trade away either major criterion — it trades against operational burden instead, which is the cost you're accepting going in.
+
+That's the HLD phase settled. Per the workflow, next up would be Phase 2 — the three leaf LLDs (change store, delivery, browser sync) — but you said to hold on those until after this. Ready when you are.

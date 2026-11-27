@@ -1,0 +1,17 @@
+## Phase 1 — complete, with the decision doc written
+
+**`docs/intent/record-store/decisions/whole-visit-revisions.md`** (new) — written as a cold-read artifact for the concurrency choice, in the format the decision-doc reference specifies:
+
+- **Context** — why the mechanism exists and why the two failure modes aren't comparable.
+- **Decision Elements** — three inherited gates (no discarded edit; no inference of scientific relatedness; operable without a sysadmin) and six weighted criteria, with the two major ones (silent-error risk vs. coordinator review workload) pulling against each other. The tenet is named as the tie-break, not as its own section.
+- **Options in the Domain** — both mechanisms given their strongest honest representation, each with a worked `v-77` example and a verdict-per-element analysis. Field-aware three-way merge is **eliminated at the gate** on inferring scientific relatedness, specifically: the server would have to decide that a revised species identification and its cover estimate are one change, and that judgment belongs to someone who has read the field notes.
+- **Selection** — Option A wins on the tenet tie-break; the foreclosed path is named explicitly ("not an oversight — do not 'fix' it later by quietly adding automatic merging for common field pairs"), and the downstream obligations are spelled out for tablet-sync (base revision per visit, full visit sent, superseded-copy state, heavier local storage) and review-export (side-by-side comparison, unresolved visits excluded from the Friday CSV rather than exporting a contested visit's arbitrary winner).
+- **Revisit trigger** — the conditions under which the other approach becomes worth reconsidering, and the shape it would have to take (merge proposals confirmed by a person before becoming current, which keeps the benefit and drops the gate failure).
+
+The doc carries no EARS IDs and owns no specs. It is linked from record-store's Decisions table, which arrives with the Phase 2 LLD rewrite — the current LLD still has its "Open Design Choice" section, so I've left it untouched rather than half-editing it out of order.
+
+**Also carried from the earlier turn:** the three HLD edits (`docs/high-level-design.md`) — architecture table row, the paragraph describing the now-selected mechanism, and the new tenet *"Prefer a larger human review queue over automatically combining edits that may be scientifically related."*
+
+**One thing I want to name rather than bury:** the doc's framing of field-aware merge as *eliminated at a gate* is a stronger statement than "not chosen today." If you consider the merge approach live — for instance if a future session might legitimately revisit it under the confirmation-before-current variant — say so and I'll soften the framing to a deprioritised option with the same analysis. Otherwise the current wording is what stops a later session from reintroducing automatic merging for common field pairs without asking you.
+
+**Reply to proceed.** On approval I'll move to Phase 2: rewrite `docs/intent/record-store/record-store-design.md` around whole-visit revisions — replacing the open-choice section with the settled mechanism, defining the submission envelope (base revision ID, idempotency key, full visit), the current-state response, the unresolved-work representation, and the resolution operation, plus the Decisions & Alternatives table with the row linking the decision doc. Per the skill, that phase ends with its own stop, so tablet-sync and review-export stay untouched until you say so.

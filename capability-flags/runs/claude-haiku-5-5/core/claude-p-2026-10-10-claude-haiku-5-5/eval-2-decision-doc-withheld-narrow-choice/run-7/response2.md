@@ -1,0 +1,5 @@
+I'd skip the decision doc. The test is whether a cold reader would still re-litigate the choice without the competing options. Here they would not. The choice affects only the previews node: the HLD, the review API, and the external contract are unchanged. A row in `previews-design.md`'s Decisions & Alternatives table carries what a future reader needs: 2Q was chosen for scan resistance during long screenings, and LRU and frequency-with-aging were rejected for scan vulnerability and aging costs. The length of the debate doesn't change that.
+
+A decision doc would fit if the choice reshaped a sibling node, such as the review API needing to know the policy, or if the 2Q-versus-segmented-LRU question stayed open. The promotion-rule fork is a spec question, though, so it belongs in the previews LLD and specs once you answer it, not in a decision doc.
+
+Phase 1 is still waiting on your answers: approve the HLD sentence removal, and choose between classic 2Q and promote-on-second-hit (which is segmented LRU). Then I'll draft the previews LLD for review.

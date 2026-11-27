@@ -1,0 +1,3 @@
+A decision doc would be overkill.
+
+The HLD already fixes offline kiosk operation and USB-only updates, so the HTTPS and managed-service options conflict with established architecture rather than remaining equally viable alternatives. The local SQLite choice is a Registry-internal implementation decision with a clear rationale, best captured by one row in the Registry LLD’s **Decisions & Alternatives** table.

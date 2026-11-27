@@ -1,0 +1,7 @@
+Honestly? I'd say no — and here's the test I'm applying rather than the length of the argument: *would a cold reader of the landed result find the choice non-obvious and be tempted to re-litigate it?*
+
+Once the rationale is on the page, 2Q reads as self-settling for this workload: the design records that long sequential screenings must not evict the comparison working set, and the LLD's Decisions & Alternatives row already names both rejected alternatives with the specific reason each fails (LRU collapses under scans; aged frequency keeps yesterday's favorites after a project switch). A future reader questioning "why 2Q?" can reconstruct the judgment from that row alone — that's the bar a decision doc has to clear, and the row already clears it.
+
+The other signals also point away: the policy is private to the preview worker, no sibling node gets sized around it, and nothing external depends on it. The doc template's own warning applies — a decision-doc directory full of contested-feeling choices is a smell, and offering one tends to get a yes regardless of need.
+
+If you still want it memorialized — three meetings is real effort, and you know your team's tendency to reopen things better than I do — I'll write one under `docs/intent/previews/decisions/` laying out context, criteria, the three options, and the selection, linked from the LLD's row. But my recommendation is to keep the table row and spend the effort on the next phases: the edge audit, then tests-first implementation. Want me to proceed that way, or write the doc?

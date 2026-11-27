@@ -1,0 +1,1 @@
+A Decisions & Alternatives row is enough here. The kiosks’ lack of runtime network access rules out both service-backed options, so a decision doc would mostly expand a rationale the HLD already captures. A full doc would make sense if that offline constraint becomes negotiable and the alternatives remain genuinely viable.

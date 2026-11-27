@@ -1,0 +1,8 @@
+Under LID's decision-doc heuristic, we test whether the decision earns a standalone doc from the **landed state looking forward**, rather than from how hard or contentious the deliberation was:
+
+- **The test**: *Once this lands, would a cold reader find the choice non-obvious — would they question it, or be tempted to reverse it, not knowing why it went this way?*
+- **The assessment**: A cold reader encountering 2Q in a 12 GiB single-worker cache might see two queues, ghost buffers, and tuning parameters as unnecessary complexity compared to standard LRU, and be strongly tempted to "simplify" it back to LRU. However, this decision has strictly localized substance inside the preview worker (`docs/intent/previews/`), affects no external APIs or sibling segments, and is settled cleanly once the trade-off is articulated: *we accept extra queue bookkeeping specifically to prevent sequential screening scans from evicting working-set comparison sheets*.
+
+A row in `previews-design.md`'s `Decisions & Alternatives` table records this rationale permanently and directly where the cache architecture is read. That said, if you want future maintainers to see the full options analysis (LRU vs. frequency with aging vs. 2Q) scored against scan resistance, bookkeeping overhead, and adaptation latency so it cannot be casually re-litigated, we can write a dedicated doc at `docs/intent/previews/decisions/cache-eviction-policy.md`.
+
+Do you want to write the full decision doc, or keep the rationale recorded in the LLD table row?

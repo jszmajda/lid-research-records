@@ -1,0 +1,7 @@
+It would be overkill—the `Decisions & Alternatives` row in `registry-design.md` is the right level here, for three reasons:
+
+1. **Inherited HLD constraints eliminate the other options.** `docs/high-level-design.md` requires offline kiosk-local lookup with no runtime network access and rules out remote/cloud services during kiosk operation, which disqualifies both the on-site HTTPS directory and the managed search service outright. Unless those HLD constraints change, the choice isn't live for a future maintainer to re-litigate.
+2. **The impact stays inside `registry`.** `certificates` only sees `findBySerial(serial)` and its fixed `Found`/`NotFound` result types, so no other design node is sized around this backend choice.
+3. **Evaluated from the landed state rather than the deliberation, one rationale line settles it.** Even when options take real thought up front, a decision doc only earns its place if a cold reader of the finished design would still question the choice and need the full option-by-criterion breakdown. Here, the only remaining question—why an indexed SQLite file over scanning raw NDJSON or holding 150 MB in a 4 GB kiosk's RAM—is answered in one table row.
+
+I'd keep it as the `Decisions & Alternatives` row and skip creating `docs/intent/registry/decisions/`. Whenever you're ready, let me know if `registry-design.md` looks good as drafted and how you'd like to triage probe items 1–7 before Phase 3 (`registry-specs.md`).

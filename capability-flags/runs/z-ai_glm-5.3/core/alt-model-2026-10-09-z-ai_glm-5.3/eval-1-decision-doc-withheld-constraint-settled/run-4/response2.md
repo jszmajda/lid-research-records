@@ -1,0 +1,5 @@
+Overkill, in my read. The test is whether the choice stays live for a cold reader once landed — not how long the deliberation ran — and here the HLD's offline tenets (no runtime network, no network route) settle it: two of the three options violate tenets the whole project already leans on, so a fresh reader would find SQLite native rather than tempting to reverse. The Decisions & Alternatives row I recorded already names both rejected options and why, which is the record a future session would need if the offline tenets ever get revisited. How hard it was to decide is exactly what the doc *shouldn*'*t* memorialize — that's deliberation residue, not current intent.
+
+If you'd still like the fuller artifact, say so and I'll write one under `docs/intent/registry/decisions/` — you're the boss — but my recommendation is the row stands alone.
+
+Still pending from the last stop: your triage of the nine Deferred items (item 1 first — it shapes the EARS updates) and approval of the LLD before I move to Phase 3.

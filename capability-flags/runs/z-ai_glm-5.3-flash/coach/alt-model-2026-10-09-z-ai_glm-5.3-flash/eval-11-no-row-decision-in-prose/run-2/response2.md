@@ -1,0 +1,17 @@
+Here's the walkthrough on the in-memory queue, pulling together F1, F3, and F4 — they're really one story about the same design choice.
+
+**The observation.** `job-queue-design.md:14` states: "The queue is a per-printer-class list of accepted jobs held entirely in process memory... jobs that were accepted but not yet dispatched before a restart are gone, and members resubmit them." Note the asymmetry that makes this choice interesting: the *files* survive — G-code is persisted on disk under a content hash — but the *queue state* doesn't. A restart costs members their place in line, not their upload.
+
+**The tenet conflict (F3).** Your HLD's first tenet is "A submitted job is a promise: members should be able to upload and walk away." But the Context section of the same LLD says the mini-PC "takes unattended OS updates and the occasional power blip" — so the restart story is not an edge case, it's a described operating condition. Under *tenets capture forward-looking preference* — tenets are tie-breakers meant to pre-narrow decisions for future sessions — this mechanism works directly against the tenet under exactly the condition the docs predict. A member who uploads at 9pm and an OS update that lands at 2am means a lost promise with nobody present to notice, which is the worst version of the failure.
+
+**Why this matters beyond the tenet.** This is also where F1 bites. All five QUEUE specs are marked `[x]` complete, yet no spec covers queue durability at all — so the `[x]` markers assert a completeness that the docs themselves undercut. And per *intent leads; code is compiled output* — specs are the source of truth, code is compiled from them — if you later fix this in code without a spec change, the fix becomes invisible drift. The moment to decide is now, in the LLD, while nothing downstream exists yet to unwind.
+
+**Your options.** All three are legitimate; the choice is yours:
+
+1. **Change the design** — persist the queue (e.g., a write-ahead record alongside the content-addressed files, or a small SQLite table like the registry uses). This is the option that honors the tenet as written. Cost: more state to rebuild on startup, more surface in the dispatch specs.
+2. **Record the exception** — keep the in-memory design and add a Decisions & Alternatives row that names the tenet traded against and why ("in-memory chosen for simplicity on modest hardware; accepted cost: restarts drop undispatched jobs, contradicting the 'promise' tenet under OS updates; mitigated by [whatever mitigation]"). This also resolves the decision-capture angle — a cold reader of the current line would absolutely still question it.
+3. **Revise the tenet** — if you look at it and decide "upload and walk away" was always aspirational beyond restarts, soften the tenet to match. But I'd push back gently here: the tenet is the most product-real line in your HLD, and weakening it to fit the implementation inverts the arrow.
+
+**If you go with option 2 or 3**, the change is one edit to `docs/intent/job-queue/job-queue-design.md`. **If you go with option 1**, that's a real design change — the right path is to run it through `/linked-intent-dev` so the new specs, and eventually tests, cascade in order rather than being patched in afterward. Whichever you pick, the premature `[x]` markers on QUEUE-001–005 should come down to `[ ]` until tests exist behind them.
+
+Want me to sketch what option 1's specs would look like, or draft the option 2 Decisions row?

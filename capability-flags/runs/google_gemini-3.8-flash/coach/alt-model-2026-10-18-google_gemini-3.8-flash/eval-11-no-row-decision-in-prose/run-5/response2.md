@@ -1,0 +1,15 @@
+**F2 — High. The in-memory queue loses accepted jobs during restarts, directly conflicting with the HLD tenet without recorded justification.** In `docs/high-level-design.md`, the primary tenet states: *"A submitted job is a promise: members should be able to upload and walk away."* However, `docs/intent/job-queue/job-queue-design.md` specifies that the queue is held entirely in process memory, and on startup, *"jobs that were accepted but not yet dispatched before a restart are gone, and members resubmit them."* The context explicitly notes that the mini-PC takes unattended OS updates and power blips. Under *tenet cascade* — leaf designs must uphold upstream tenets or document the trade-off — this mechanism breaks the core promise under normal operating conditions: a member uploads in the evening, walks away, the machine takes an overnight OS update, and their print is silently discarded. If this trade-off is accepted, the arrow is missing the explicit exception connecting the design back to the tenet.
+
+**F3 — Medium. Memory-only queue state is an uncaptured load-bearing decision.** While `job-queue-design.md` mentions the in-memory architecture in passing in §Architecture, its Decisions & Alternatives table lists scheduling order, slugs, and upload limits, but omits queue state persistence entirely. In contrast, `printer-registry-design.md` deliberately chose and documented a single SQLite file. Under *docs carry current intent* (the keep-side of decision capture) — decisions that a cold reader would question or be tempted to reverse must capture the rejected alternative and accepted cost — a future engineer reading this cold will immediately ask why the registry is durable in SQLite while the queue is ephemeral in memory, especially when G-code files are already persisted to disk.
+
+---
+
+### What I Recommend Doing
+
+You have three standard ways to resolve this tension in LID:
+
+1. **Align the design with the tenet (Recommended):** Persist queue state alongside the printer registry in SQLite (or a simple metadata file alongside the cached G-code). When the mini-PC reboots, `QUEUE-004` can reload queued jobs in FIFO order rather than discarding them. This fully satisfies the "upload and walk away" promise with negligible overhead for SQLite.
+2. **Record the deliberate trade-off:** If keeping the queue strictly in-memory is an intentional constraint (for example, to enforce simplicity on modest hardware or keep state purely ephemeral), add a row to `job-queue-design.md` under Decisions & Alternatives. Document that disk persistence was rejected, state the reason, and explicitly cite the tenet exception being made.
+3. **Revise the upstream tenet:** If the makerspace culture genuinely accepts that a power blip or restart cancels undispatched jobs, adjust the HLD's tenet in `docs/high-level-design.md` to reflect that submitted jobs are best-effort overnight rather than a walk-away guarantee.
+
+Which of these directions best reflects your vision for the service?

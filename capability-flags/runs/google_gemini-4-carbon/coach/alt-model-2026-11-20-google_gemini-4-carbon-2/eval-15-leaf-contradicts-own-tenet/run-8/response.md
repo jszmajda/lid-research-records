@@ -1,0 +1,31 @@
+*Strong early intent layer; missing workflow directives, premature `[x]` spec markers, and an unrecorded tenet conflict to resolve before implementation.*
+
+**Scorecard**
+- ✓ **Design structure & mode fit** — clean depth-2 `docs/intent/` node-as-folder tree matching `Full` mode and the HLD's two components
+- ✓ **HLD & prose hygiene** — crisp, present-tense architecture and rationale with zero implementation bloat or historical residue
+- ✗ **Arrow completeness & status markers** — intent is authored through EARS, but all 13 specs are marked `[x]` with no tests or code in the repo
+- ⚠ **Configuration** — `CLAUDE.md` carries the `## LID` block (`Mode: Full`, `Version: 1.4.0`) without the LID workflow directives section
+- ⚠ **Tenet cascade & decision capture** — local-branch-first allocation works against the HLD's sequence tenet and has no `Decisions & Alternatives` row
+- ⚠ **LLD & spec edge closure** — "open hold" eligibility, hold cancellation, and lapse-to-pull transitions leave behavioral forks open
+
+The HLD, both leaf LLDs (`hold-allocation` and `pickup-notices`), and their EARS files are unusually clean, domain-grounded, and free of historical residue, with `pickup-notices` modeling strong trade-off capture in its `Decisions & Alternatives` table; the highest-value next step is reconciling `CLAUDE.md` via `/update-lid` and flipping unimplemented spec markers to `[ ]` before walking Phases 4–6.
+
+**Findings (9 total · 3 high · 5 medium · 1 low)**
+- **F1 (high):** `CLAUDE.md` declares `## LID` (`Mode: Full`, `Version: 1.4.0`) but omits the `## Linked-Intent Development` workflow directives block (reconcilable with `/update-lid`) · *modes are declared, not inferred* — the instruction file anchors both mode declaration and the workflow rules agents load every session
+- **F2 (high):** All 13 EARS specs across `hold-allocation-specs.md` and `pickup-notices-specs.md` are marked `[x]` (implemented) while no test or source files exist in the repository · *coherence is adjacency* — each rung of the arrow agrees with its neighbors, so `[x]` attests that tests and code realize the spec while unbuilt specs stay `[ ]`
+- **F3 (high):** Scanning-branch-first allocation in `hold-allocation-design.md` and `HOLDALLOC-003` works against the HLD tenet *Waiting is honored in sequence* whenever a copy is checked in at a branch with a newer local hold while an earlier hold waits at another branch, with no recorded exception · *tenets capture forward-looking preference* — leaf mechanisms lean the way the HLD's tenets direct unless an explicit trade-off records the exception
+- **F4 (medium):** Local-branch preference over county-wide FIFO in `hold-allocation-design.md` lives only in body prose ("keeps most copies off the courier van") with no `Decisions & Alternatives` row capturing what was given up and what fairness or branch-starvation cost was accepted · *docs carry current intent, written to be read cold* — live choices a cold reader would question belong in `Decisions & Alternatives` with the rejected option and accepted cost
+- **F5 (medium):** `hold-allocation-design.md` and `HOLDALLOC-003`/`004` allocate returned copies to the oldest "open hold" without distinguishing waiting holds from holds that already have an `allocated` copy in transit or on a holds shelf (since holds remain open until checkout or expiry pull) · *LLDs close enough of the solution space* — designs specify state distinctions tightly enough that two agents reading cold build compatible behavior
+- **F6 (medium):** `hold-allocation-design.md` and `HOLDALLOC-007` depend on hold cancellation ("and its hold was cancelled") without specifying cancellation across waiting, in-transit, and holds-shelf states or how arrival detects cancellation if closed hold records are deleted under *Hold history is not kept* · *LLDs close enough of the solution space* — unclosed lifecycle edges push state-modeling guesses into implementation
+- **F7 (medium):** `docs/high-level-design.md` `## Tenets` leaves four potentially conflicting tenets unordered and embeds triggered spec-shaped rules inside *Patrons hear once, clearly* and *Hold history is not kept* ("Each event produces one message…", "A closed hold's record is deleted") alongside a non-tie-breaker modifier ("clearly") · *tenets capture forward-looking preference* — tenets are ordered one-line tie-breakers with a defensible opposite, while triggered *when X, do Y* rules belong in EARS
+- **F8 (medium):** `pickup-notices-design.md` describes window lapse without naming the off-shelf staff scan or record deletion in `PICKUP-005`, leaving open whether a patron arriving after midnight lapse (`PICKUP-004`) but before the morning pull scan (`PICKUP-005`) may still check out the copy · *coherence is adjacency* — adjacent LLD prose and EARS specs align on triggers and state boundaries
+- **F9 (low):** `hold-allocation-design.md` and `pickup-notices-design.md` omit `parent:` and `prefix:` YAML frontmatter even though their spec namespaces (`HOLDALLOC`, `PICKUP`) differ from their folder slugs · *effective intent-tree alignment* — `prefix:` frontmatter is the authoritative bridge from a human-readable node folder to its EARS ID prefix
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/hold-allocation/hold-allocation-design.md`, `docs/intent/hold-allocation/hold-allocation-specs.md`, `docs/intent/pickup-notices/pickup-notices-design.md`, `docs/intent/pickup-notices/pickup-notices-specs.md` (all 6 files in the repository)
+- Enumerated: 1 HLD (4 tenets, 2 goals), 2 leaf LLDs (7 `Decisions & Alternatives` rows), 2 spec files (13 EARS specs: `HOLDALLOC-001`–`007`, `PICKUP-001`–`006`), 0 arrow-overlay files (`docs/arrows/` not installed)
+- Linkage metric: 0 test files, 0 source files, and 0 `@spec` annotations present in the repository
+
+Want me to walk through all of these findings in detail, focus on the high-priority items first, or dig into a specific finding (such as the sequence-tenet conflict or the open-hold state gaps) together?
+
+If you also have broader questions about using LID from here — kicking off Phases 4–6 with `/linked-intent-dev`, when to add the `arrow-maintenance` overlay, or how decision docs compare to `Decisions & Alternatives` rows — I can help with those too.

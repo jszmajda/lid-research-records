@@ -1,0 +1,1 @@
+Overkill. The offline tenet eliminates both network-dependent options for a cold reader, so the choice doesn't stay genuinely live once it lands. The Decisions & Alternatives row already captures the remaining local-rebuild consequence; no separate decision doc needed.

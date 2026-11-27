@@ -1,0 +1,3 @@
+A separate decision doc would be overkill for the current design. The kiosk’s offline constraint rules out both network-dependent services, so the HLD’s decision row captures the choice and why it fits. The amount of deliberation alone doesn’t mean the decision needs its own document.
+
+If the network constraint changes and those alternatives become viable, the trade-off may be live enough to warrant a decision doc.

@@ -1,0 +1,255 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..54d5cf3 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,8 +10,8 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
+-- Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its lookup backend is a local embedded SQLite index that each kiosk rebuilds when a snapshot arrives.
++- Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the registry's two-case lookup result type and writes PDFs to a user-selected local directory. A lookup that cannot be answered is reported to the certificate component as a failure, never as a NotFound result.
+ 
+ ## Tenets
+ 
+@@ -24,7 +24,8 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ - Resolve a serial number within 250 ms on a kiosk with 4 GB of RAM.
+ - Handle 90,000 records and snapshots up to 150 MB.
+-- Show the snapshot date on every lookup result and exported certificate.
++- Show the snapshot date on every lookup result that carries one and on every exported certificate. A lookup that cannot be answered carries no snapshot date, because no snapshot could be read.
++- Distinguish a failed lookup from an inventory miss, so a technician is never told that equipment is absent from the inventory when the kiosk could not read its data.
+ - Let technicians produce certificates without installing extra software or fonts.
+ 
+ ## Non-Goals
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..cb86376 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,171 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. Each snapshot is a complete inventory as of its snapshot date — roughly 90,000 records today — delivered on approved USB media copied in by hand.
++
++Kiosks have no network path, so the registry is the only place snapshot knowledge lives on a kiosk. It must both accept and validate an incoming snapshot and answer lookups from local files alone.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning one of two results:
++
++- `Found(record, snapshotDate)` — the matching record and the date of the snapshot it came from.
++- `NotFound(snapshotDate)` — the search completed and no record matched, carrying the active snapshot's date.
++
++This result type is fixed. The certificates node uses only this interface.
++
++A lookup that cannot be answered from the active snapshot does not return a result at all — it reports a failure with a reason:
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++- `NoSnapshot` — no snapshot has ever been imported on this kiosk, so there is no inventory to search and no snapshot date to report.
++- `IndexUnreadable` — the index file is missing, corrupt, truncated, or cannot be opened or read.
++- `IndexInconsistent` — the index's metadata and its record rows disagree, or a required metadata key is missing.
++
++A failure is not a result and is never reported as `NotFound`. `NotFound` is a claim that the search ran and the equipment is not in the inventory; a failure is a claim that the search could not run. A certificate built on a failure would assert something the kiosk does not know.
++
++The lookup backend is a local embedded SQLite database owned by this component. Every accepted snapshot is indexed into the kiosk's own database; there is no shared directory, remote service, or network dependency. Snapshot validation, index construction, and lookup all live inside this node.
+ 
+ ## Snapshot Import
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++An import runs in two stages.
++
++**Validate before touching the index.** Read the snapshot from the approved media, verify its signature using the bundled public key, and check that its schema version is one the registry supports. A snapshot that fails either check is rejected outright; the active snapshot is untouched.
++
++**Build and activate in one transaction.** With signature and schema version accepted, stream the newline-delimited JSON records and write them into the index database inside a single transaction that also updates the snapshot metadata. Duplicate serial numbers, malformed record lines, and records missing required fields abort the transaction. Nothing from the new snapshot is visible until the transaction commits, so the active snapshot is replaced wholesale rather than in pieces.
++
++Any import failure leaves the previously active snapshot active and its records available for lookup, and reports which stage failed: signature, schema version, malformed record, duplicate serial number, empty snapshot, insufficient storage, or import already in progress.
++
++A snapshot containing no records is rejected. A signed but empty snapshot would otherwise replace a kiosk's inventory with an empty one and leave every lookup returning NotFound under a newer snapshot date.
++
++### Signed content
++
++The signature manifest authenticates the whole snapshot, not just its metadata: the record stream, the snapshot date, the schema version, and the record count all fall inside the signed envelope. Verification fails if any of them falls outside it.
++
++Two things follow from the count and the stream both being signed. The number of records the import actually processes is compared against the signed record count, and a mismatch rejects the import — a truncated or tampered stream is caught before it becomes the index. And the snapshot date that reaches every certificate is signed content, not kiosk-controlled content.
++
++The snapshot identifier recorded in the index metadata comes from the signed manifest.
++
++### Record stream
++
++The record stream is strict UTF-8 newline-delimited JSON with exactly one JSON object per line.
++
++- A byte-order mark at the start of the stream is rejected.
++- A trailing newline at end of file is accepted. A blank line anywhere else is a malformed record.
++- A line that is not valid UTF-8, is not a JSON object, or carries a wrong JSON type for a known field is a malformed record and aborts the import.
++- Unknown extra fields are ignored, whatever their type. Only the four known fields are type-checked.
++
++Each record carries four required fields:
++
++| Field | Requirement |
++|---|---|
++| `serial` | Non-empty string. |
++| `description` | Non-empty string. |
++| `calibration_date` | Calendar date in `YYYY-MM-DD` form. |
++| `due_date` | Calendar date in `YYYY-MM-DD` form. |
++
++A required field that is absent, null, empty, or of the wrong type makes the record malformed. A date is a calendar date, not merely a `YYYY-MM-DD`-shaped string: `2024-02-31` is malformed.
++
++### Lookup key
++
++Every record is indexed under a lookup key derived from its serial: leading and trailing ASCII whitespace (space, tab, carriage return, line feed) is trimmed and ASCII letters `A`–`Z` are uppercased by a fixed table, independent of locale. Every other character is significant and preserved, including internal whitespace, punctuation, and non-ASCII characters. Non-ASCII letters are not case-folded, so `Ä-9` and `ä-9` are different keys.
++
++The same derivation is applied to the serial a technician types, on both sides of the comparison: a record is keyed by its lookup key, and a lookup searches for the lookup key of the requested serial. A lookup is therefore insensitive to ASCII letter case and surrounding ASCII whitespace in either the request or the inventory record.
++
++Uniqueness is checked on the lookup key, so two records differing only in ASCII letter case or surrounding ASCII whitespace are duplicates and the import is rejected. Two spellings of one serial are ambiguous to serve — the registry could not say which record a lookup meant — so the import rejects them rather than picking one.
++
++### Import concurrency and failure residue
++
++One import runs at a time on a kiosk, enforced kiosk-wide rather than per process, so a second import tool or service instance cannot start a competing import. An import attempted while another is in progress is rejected with the "import already in progress" reason and does not disturb the running import.
++
++A failed import is rolled back completely: the database returns to the state it had before the attempt, the previously active snapshot remains active and queryable, and the next import attempt starts from that same baseline with no cleanup step in between.
++
++An import that exhausts available disk space at any stage — including at commit — aborts and leaves the previous snapshot active and queryable. The import is not resumable across a kiosk restart; it is all-or-nothing by design.
++
++## Local Index
++
++The index lives in a single SQLite database file under the kiosk's application data directory, at `<data dir>/registry/registry.sqlite`. One file holds the active snapshot; the registry does not accumulate one file per import. The registry owns that file together with its `-wal` and `-shm` sidecars as a unit: any backup or cleanup routine that copies files individually must not leave the sidecars behind, or recently committed snapshot data is lost. A checkpoint runs at the end of every successful import, and committed snapshot data is on disk in the index file before the import is reported successful.
++
++The database holds two tables:
++
++| Table | Columns | Purpose |
++|---|---|---|
++| `records` | `serial_key` (primary key), `serial`, `description`, `calibration_date`, `due_date` | One row per record of the active snapshot. `serial_key` is the lookup key; `serial` is the serial number exactly as the inventory recorded it. |
++| `meta` | `key` (primary key), `value` | The active snapshot's identifier, snapshot date, schema version, record count, and import timestamp. |
++
++The required `meta` keys are the snapshot identifier, snapshot date, schema version, and record count. The presence of a valid snapshot-date key is what marks the index as initialized: a `registry.sqlite` that exists but holds no snapshot-date key is an index with no snapshot, not a usable registry.
++
++The database runs in WAL mode, so an import never blocks a concurrent lookup and a lookup never observes an uncommitted import. The import path opens the file read-write; the lookup path opens the same file and sees committed state only.
++
++Import procedure, in order:
++
++1. Verify the signature and schema version. Failure here stops the import before the index is touched.
++2. Begin a transaction.
++3. Delete the existing rows of `records`.
++4. Insert each record, using its `serial_key` as the primary key. A duplicate key aborts the transaction.
++5. Update `meta` with the new snapshot's identifier, snapshot date, schema version, and record count, and the import timestamp.
++6. Commit, then checkpoint the write-ahead log.
++
++Because the delete, the inserts, and the metadata update share one transaction, a crash or error at any point in steps 2–5 rolls back to the previous snapshot intact.
++
++An index that has yielded `IndexUnreadable` or `IndexInconsistent` is treated as unusable: the registry performs no writes against it until a successful import replaces it.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++`findBySerial(serial)` derives the lookup key from the requested serial exactly as the index was keyed, and looks it up by primary key.
++
++A hit returns `Found(record, snapshotDate)`, where the record carries the serial number as the inventory recorded it together with its equipment description, calibration date, and due date. A miss returns `NotFound(snapshotDate)`. The snapshot date is the active snapshot's date, included in both results so a certificate can name the inventory the answer came from.
++
++A lookup reads the record and the snapshot date inside a single read transaction, so the record and the date naming its snapshot always come from the same snapshot even if an import commits during the lookup. The snapshot date reported is the date of the snapshot active when the lookup began.
++
++The snapshot date is never derived from the kiosk clock; it is the date carried by the snapshot that built the index. The kiosk clock is used only for the import timestamp, which records when the import happened and is not shown on a certificate.
++
++## Lookup Failures
++
++A lookup that cannot be answered from the active snapshot reports a failure with a reason instead of returning a result. The reasons are:
++
++| Reason | Condition |
++|---|---|
++| `NoSnapshot` | No snapshot has ever been imported on this kiosk. The index is absent, or present but carrying no valid snapshot-date key. |
++| `IndexUnreadable` | The index file exists but cannot be opened or read: corrupt, truncated, or unreadable. |
++| `IndexInconsistent` | The index's `meta` table and its `records` table disagree — the recorded record count does not match the rows present, a required `meta` key is missing, or a stored row cannot be read as a record. |
++
++`NoSnapshot` and `IndexUnreadable` are distinguished by whether an index exists at all, not by history: a kiosk whose index file has been deleted reports `NoSnapshot` even if it once held a snapshot, because what matters to the technician is that there is no inventory to search.
++
++A successful import is the way out of every one of these conditions: an import replaces the index wholesale and restores a usable one.
++
++## Performance and Footprint
++
++The index holds about 90,000 records and lives on disk, so the kiosk's resident memory use stays bounded by SQLite's page cache rather than by inventory size. A lookup is a single primary-key probe, well inside the 250 ms goal. Building the index from a full snapshot is a single transaction over 90,000 rows and takes seconds; import is a technician-initiated operation and never sits on the lookup path.
++
++The index file's size is bounded by the largest snapshot ever imported, not by the current one: SQLite reuses freed pages but never shrinks the file. The registry accepts snapshots larger than the current inventory and their import time and disk footprint grow with the record count.
++
++## Storage and Lifecycle
++
++The index file persists across kiosk restarts, so the active snapshot survives a restart without a re-import. After a successful import the registry keeps only the index; the USB media is the inventory team's to reclaim, and the kiosk retains no second copy of the raw snapshot.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index rebuilt on the kiosk at each import | On-site HTTPS directory; managed search service | Kiosks have no network route, so a directory or service would make lookups depend on the lab network, add timeout and credential handling to the registry, and put recurring cost or connectivity into a component that must work alone in the production area. The certificate interface is unchanged either way. |
++| Index shape | One SQLite file holding the active snapshot, replaced inside a single transaction | One database file per snapshot plus an active-pointer file; in-memory map rebuilt at startup; raw NDJSON scanned per lookup | A transaction gives atomic activation and crash safety without depending on file-pointer semantics, and it keeps the index to one file. A per-snapshot file set would need a pointer swap and a decision about what happens to a lookup that started against the previous pointer. An in-memory map or a raw scan would either repeat the build on every restart or miss the 250 ms goal across 90,000 records. |
++| Serial matching | Canonical key (ASCII whitespace trimmed, ASCII letters uppercased) as the primary key, original serial retained alongside | Match the request against the stored serial only; store only the normalized serial | Keying both sides the same way makes a lookup insensitive to ASCII letter case and surrounding ASCII whitespace in either the request or the inventory record. Retaining the original serial preserves what the inventory actually reported, which is what a certificate should show. |
++| Lookup key alphabet | ASCII-only trimming and uppercasing; all other characters significant | Unicode whitespace trimming and full Unicode case folding | Machine-shop serial numbers are ASCII in practice, and ASCII-only derivation has one rule for every platform. Unicode folding would need a normalization form and a case-folding table pinned per platform, and the resulting rules are harder for a technician to predict. A non-ASCII serial is still indexed and still findable by its exact characters. |
++| Duplicate detection | Duplicates judged on the lookup key | Duplicates judged on the exact stored string | Two spellings of one serial are ambiguous to serve, so the import must reject them rather than pick one. |
++| Lookup failure shape | A failure with a named reason, reported outside the two-case result type | A third `Unavailable` case in the result type; reporting a read failure as `NotFound` | The result type is fixed and shared with the certificate component; a failure is not an inventory answer, and giving it a third case would make every consumer handle a non-answer as though it were an answer. Reporting a failure as `NotFound` is worse still: it asserts the equipment is absent from the inventory when the kiosk simply could not read its data. A separate failure channel keeps the answer type clean and the failure legible. |
++| Snapshot retention | Index only; the raw snapshot is not retained on the kiosk | Keep the raw snapshot file alongside the index | The index carries everything lookups need, and retaining the raw snapshot would put another copy of up to 150 MB per kiosk on device for no lookup benefit. |
++| Empty snapshot | Rejected as invalid | Accepted as a valid empty inventory | A signed empty snapshot would erase a kiosk's inventory and leave every lookup returning NotFound under a newer snapshot date, which reads as a working kiosk with no data. |
++| Import concurrency | One import at a time, kiosk-wide; a second concurrent import is rejected | Queue the second import; let SQLite serialize the writers | An explicit rejection gives the operator a clear reason instead of a wait that looks like a hang, and the registry never has to decide whether a queued import is still wanted. Kiosk-wide enforcement also stops a second import tool from competing with the running one. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ The lookup backend is a local embedded SQLite index. The registry rebuilds and validates its own index on each accepted snapshot; no service or network path is involved.
++
++### Deferred
++
++1. Whether the registry should retain the immediately previous snapshot's index to support a one-step rollback after a bad import. Rejected imports are already safe, so this is a convenience for a successful import that turns out to be wrong.
++2. Whether an import of a valid snapshot whose date is older than the active snapshot's date should be accepted. The inventory team is authoritative and USB import order is not guaranteed, but accepting an older snapshot shows an older snapshot date on certificates. Until this is decided, imports are accepted regardless of date, and the index metadata retains both the active snapshot date and the import timestamp so the ordering can be audited.
++3. Whether an import should be resumable across a kiosk restart for very large snapshots. The current design performs the whole import in one transaction, which is all-or-nothing by design.
++4. Whether the registry should check available disk space before starting an import, and how the kiosk reports the shortfall. The failure semantics are settled — a full disk aborts the import and leaves the previous snapshot active — but the pre-check and its message are not.
++5. Whether the index file should be vacuumed after importing a snapshot much smaller than the largest ever imported, which would return the file to the size of the current snapshot.
+diff --git a/docs/intent/registry/registry-specs.md b/docs/intent/registry/registry-specs.md
+index 34af980..0b29a72 100644
+--- a/docs/intent/registry/registry-specs.md
++++ b/docs/intent/registry/registry-specs.md
+@@ -2,7 +2,41 @@
+ 
+ # Registry Specifications
+ 
+-- [ ] **REG-001**: When a serial-number lookup is requested, the system SHALL normalize surrounding whitespace and ASCII letter case before returning a matching record or NotFound.
+-- [ ] **REG-002**: When a lookup completes, the system SHALL include the active snapshot date in the result.
+-- [ ] **REG-003**: When a snapshot has an invalid signature, an unsupported schema version, or duplicate serial numbers, the system SHALL reject the import and retain the active snapshot.
++## Lookup
++
++- [ ] **REG-001**: When a serial-number lookup is requested, the system SHALL derive the lookup key from the requested serial number by trimming leading and trailing ASCII whitespace (space, tab, carriage return, line feed) and uppercasing ASCII letters A-Z, and SHALL return a matching record or NotFound by that key.
++- [ ] **REG-002**: When a lookup completes with a Found or NotFound result, the system SHALL include the date of the snapshot the lookup was answered from in the result.
++- [ ] **REG-003**: When a snapshot has an invalid signature, an unsupported schema version, or two records whose lookup keys are equal, the system SHALL reject the import and retain the active snapshot.
+ - [ ] **REG-004**: When a valid replacement snapshot is activated, the system SHALL expose all of its records together without exposing a partially imported snapshot.
++- [ ] **REG-005**: When a serial-number lookup completes with a NotFound result, the system SHALL report that the search completed and no record matched, and SHALL NOT report that the registry could not answer.
++- [ ] **REG-006**: When a serial-number lookup completes with a Found result, the system SHALL return the serial number exactly as the inventory recorded it, together with the record's equipment description, calibration date, and due date.
++- [ ] **REG-007**: When a serial-number lookup completes with a Found or NotFound result, the system SHALL take both the record and the snapshot date from the same snapshot, even when an import commits during the lookup.
++- [ ] **REG-008**: When a serial-number lookup cannot be answered from the active snapshot, the system SHALL report a failure with a reason and SHALL NOT return a Found or NotFound result.
++- [ ] **REG-009**: When a serial-number lookup cannot be answered because no snapshot has ever been imported on the kiosk, the system SHALL report a failure with reason NoSnapshot.
++- [ ] **REG-010**: When a serial-number lookup cannot be answered because the index file exists but cannot be opened or read, the system SHALL report a failure with reason IndexUnreadable.
++- [ ] **REG-011**: When a serial-number lookup cannot be answered because the index's metadata and record rows disagree or a required metadata key is missing, the system SHALL report a failure with reason IndexInconsistent.
++- [ ] **REG-012**: When a record is indexed, the system SHALL key it by the lookup key derived from its serial by the same derivation the lookup path applies to a requested serial.
++- [ ] **REG-013**: When a record is indexed, the system SHALL retain the serial number exactly as the inventory recorded it.
++- [ ] **REG-027**: When a lookup result carries a snapshot date, the system SHALL take that date from the snapshot that built the index and SHALL NOT derive it from the kiosk clock.
++
++## Snapshot Validation
++
++- [ ] **REG-014**: When a snapshot import is started, the system SHALL verify the signature over the snapshot's record stream, snapshot date, schema version, and record count before modifying the index.
++- [ ] **REG-015**: When the number of records the import processes differs from the snapshot's signed record count, the system SHALL reject the import and retain the active snapshot.
++- [ ] **REG-016**: When a snapshot record line is not valid UTF-8, is not a JSON object, or carries a wrong JSON type for a known field, the system SHALL reject the import and retain the active snapshot.
++- [ ] **REG-017**: When a snapshot record omits a required field, or gives a required field a null or empty value, the system SHALL reject the import and retain the active snapshot.
++- [ ] **REG-018**: When a snapshot record's calibration date or due date is not a calendar date in YYYY-MM-DD form, the system SHALL reject the import and retain the active snapshot.
++- [ ] **REG-019**: When a snapshot record carries unknown extra fields, the system SHALL ignore those fields and SHALL NOT reject the import on their account.
++
++## Snapshot Import and Activation
++
++- [ ] **REG-020**: When an import is started while another import is in progress on the kiosk, the system SHALL reject the new import and SHALL NOT disturb the running import.
++- [ ] **REG-021**: When an import fails at any stage, the system SHALL leave the previously active snapshot active and queryable.
++- [ ] **REG-022**: When an import fails or is rejected, the system SHALL report which stage failed: signature, schema version, malformed record, duplicate serial number, empty snapshot, insufficient storage, or import already in progress.
++- [ ] **REG-023**: When a valid replacement snapshot is imported but not yet activated, the system SHALL continue to serve lookups from the previously active snapshot.
++- [ ] **REG-024**: When a snapshot import succeeds, the system SHALL record the snapshot's identifier, snapshot date, schema version, and record count in the index metadata.
++- [ ] **REG-025**: When a snapshot import succeeds, the system SHALL record the time of the import in the index metadata separately from the snapshot date.
++- [ ] **REG-026**: When a snapshot import succeeds, the system SHALL persist the committed snapshot data to the index file before reporting the import successful.
++- [ ] **REG-028**: When the index has reported a failure of reason IndexUnreadable or IndexInconsistent, the system SHALL perform no writes against that index until a successful import replaces it.
++- [ ] **REG-029**: When a valid snapshot whose date is older than the active snapshot's date is imported, the system SHALL activate it and report its date in subsequent lookup results.
++- [ ] **REG-030**: When a serial-number lookup is requested on a kiosk with 4 GB of RAM holding the active snapshot, the system SHALL return a result or a failure within 250 ms.

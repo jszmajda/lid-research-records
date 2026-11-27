@@ -1,0 +1,15 @@
+The 2Q decision is carried through the arrow, and the review API and render queue are untouched — everything landed inside the previews segment, as you wanted.
+
+**Phase 1 — HLD** (`docs/high-level-design.md`): the previews node now says it owns a 12 GiB cache under a 2Q replacement policy; added the tenet *"Protect repeatedly compared previews over one-pass screening scans when cache space is contended"* and the goal *"Keep an editor's repeatedly compared contact sheets resident across a long sequential screening."*
+
+**Phase 2 — LLD** (`docs/intent/previews/previews-design.md`): new *Cache Replacement Policy* section — first-use queue, hot queue, ghost queue (keys only), admission/promotion/eviction rules, a 12 GiB budget partitioned between the two data queues, serialized admission, and a Decisions & Alternatives table where 2Q is recorded against LRU and aged-frequency with the rationale.
+
+**Phase 3/4 — EARS** (`previews-specs.md`): PREVIEW-006…019 added for the policy, plus PREVIEW-020…022 pinning three pre-existing LLD behaviors the policy leans on (preview key = clip ID + revision + renderer version; temporary render output kept separate and removed; at most four concurrent render jobs). The edge audit caught two gaps I closed: nothing said the ghost key is released when a ghost-hit sheet is admitted to the hot queue (PREVIEW-010), and nothing pinned the one-structure-per-key invariant (PREVIEW-019) or oversized sheets (PREVIEW-018). No cross-segment obligation arose: the review API never observes cache state, so its LLD and specs are unchanged.
+
+Three things I need from you before I go further:
+
+1. **Budget split.** I set 3 GiB first-use / 9 GiB hot (75/25), documented as a pilot-tuned parameter. The hot queue gets the larger share because it holds the comparison sheets the policy exists to protect and the first-use queue only buffers scans. Keep 75/25, or want 50/50, or 90/10?
+2. **Reuse signal.** I count *retrievals from the cache*, and the retrieval that first delivers a freshly rendered sheet is its delivery, not reuse. Counting raw requests would promote nearly every sheet to hot — the browser retries a pending ticket every two seconds — and collapse 2Q into one queue. Confirm this reading, or do you want the retry to carry the job ticket so the worker can tell a poll from a fresh request? (The ticket route would change the review API's forwarding contract, which your note rules out, so I did not take it.)
+3. **Phases 5–6.** This repository contains only `docs/` — there is no preview worker source and no test setup, so there is nothing for failing-first tests or `@spec` annotations to attach to, and all 22 specs stay unimplemented (`[ ]`). Do you want me to scaffold the worker (and in which language) so tests and code can land against these specs, or is the design-only stop intentional for now?
+
+Smaller defaults I set and would change on a word: ghost queue depth 4,096 keys; a sheet larger than the hot budget is served but not cached; whether the cache survives a worker restart is left open under Deferred.

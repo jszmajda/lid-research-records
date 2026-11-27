@@ -1,0 +1,5 @@
+My honest take: yes, this one earns it. A cold reader finding two queues and a budget split where LRU is the industry default would re-litigate the choice without the tradeoffs laid out — that's exactly the doc test, and it doesn't apply to the other decisions in the LLD (those stay as table rows).
+
+Done: `docs/intent/previews/decisions/eviction-policy.md` now records the full context, criteria (scan resistance as the major one), the three options with their honest strongest cases, and the selection. The LLD's Decisions row links to it, and the doc notes the two costs you accepted — the split tuning and the promotion/eviction rules.
+
+Still waiting on your rulings from my last message (numbered 1–10: the promotion-trigger and ghost-key forks, plus the gap triage) before I fold them into the LLD and move on to the EARS specs.

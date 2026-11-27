@@ -1,0 +1,13 @@
+**Requirements enforced for transport failure during the marks read-back pass (`sheets_view::read_marks`):**
+
+**Event-driven.** WHEN `SheetsViewClient::read_price_pass` returns `Err` on any poll of the settle loop, `read_marks` SHALL immediately return that same `Err(ViewError)` from the call, propagating the client's error unchanged (no reclassification/remapping into a distinct variant).
+
+**Unwanted behavior.** IF a settle-pass poll fails, THEN `read_marks` SHALL NOT return `Ok` with an empty or partial `MarksProduced`. An empty result is indistinguishable from "every requested symbol degraded" and would wrongly null out live positions' marks — so silent substitution is prohibited; the failure must surface as an `Err`.
+
+**Unwanted behavior.** `read_marks` SHALL NOT itself apply `prior`-map carry-forward semantics when the pass fails outright. Carrying the last-known cached marks forward across a transport outage is the caller's (`runtime`'s) responsibility — `runtime` retains its existing cache (with quote-epoch stamps) and re-injects it into the next replay. Only the per-symbol "still transient this cycle" carry-forward (§ below) is `read_marks`'s own concern, and that carry-forward only fires on an `Ok` pass.
+
+**State-driven / boundary.** WHILE polling (`loop { let pass = client.read_price_pass()?; ... }`), a transport failure on ANY iteration — first poll or a later one, before or after other symbols have already settled numeric that cycle — aborts the loop at that point; no partial per-symbol readings latched earlier in the same cycle are merged, degraded, or returned. The whole cycle fails atomically; there is no "some symbols recovered, ship those" fallback.
+
+**Event-driven (downstream).** WHEN `read_marks` returns `Err` inside `Publisher::republish_then_settle`, that function SHALL return the same `Err` and SHALL NOT return the `RepublishOutcome` already computed by the preceding `republish()` call — even though the tab publish itself may have succeeded — because the function's return type is `Result<(RepublishOutcome, MarksProduced), ViewError>`, a single fallible tuple, not two independently-reportable results.
+
+No specific `ViewError` variant is pinned for this path (the trait/tests assert only `.is_err()`, not which variant); no numeric constant governs failure detection (unlike `max_polls`, which bounds transient retries, not transport errors — a transport error short-circuits regardless of poll count).

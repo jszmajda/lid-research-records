@@ -1,0 +1,9 @@
+Honest take: I don't think it earns a decision doc, and I'd recommend the Decisions & Alternatives row instead.
+
+The test is applied from the landed design looking forward, not from the deliberation looking back: would a cold reader re-litigate the choice without the full tradeoffs, and are other design nodes sized around it? Both fail here. Once 2Q lands, a reader asking "why 2Q over LRU?" is settled by one line of rationale — that is exactly what the LLD's Decisions row is for. And by your own framing nothing outside the preview cache changes: the internal interface, render queue, and 12 GiB budget are fixed, and `review-api-design.md` already forbids consuming eviction metadata, so no other node leans on this decision's reasoning. The skill is explicit that a long debate is a symptom, not the test — "a table row can come out of a long argument" — and to record the row rather than a doc for a choice that affects only its own node, "however long the debate ran."
+
+The cost if we write one anyway: its subject is a settled, node-local choice, so the doc reads as a chronology of our argument — the residue "docs carry current intent" strips — nothing downstream depends on its memory, and it is the kind of entry that turns a `decisions/` directory into a smell. If you want it regardless, that's your call and I'll honor it: I'd write it to be read cold (present tense, options in the domain, no "we decided after three meetings") and link it from the LLD's Decisions row. But it would be memorializing a debate rather than preserving a decision the rest of the arrow leans on.
+
+Phase 1 (the HLD check) is still awaiting your approval; nothing else has changed.
+
+So: shall I proceed with the Decisions & Alternatives row as planned, or do you want to override and have me draft the decision doc?

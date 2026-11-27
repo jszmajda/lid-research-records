@@ -1,0 +1,9 @@
+Overkill. Here's the test I'd apply, and it's not "was it hard to decide" — it's whether a cold reader of the landed design would re-litigate it without seeing the options laid out.
+
+They wouldn't. Someone reading your HLD hits "All serial-number lookup SHALL complete using files on the kiosk; no runtime network access is permitted" and "Kiosks have no network route during normal operation" before they ever reach the registry LLD. By the time they get to the backend, the HTTPS directory and the managed service are already out — not because the registry argued against them, but because the project's tenets did. The choice reads as native rather than contested, and that's the signal a doc isn't earning its place. The decision table row carries the one thing a reader still wants ("why not a service?" → the tenet, plus the cost you accepted: each kiosk rebuilds its own index).
+
+The honest reason it felt close to you is that you were weighing it against a tenet you'd already set, so the deliberation was partly about whether to hold that line. That's real work, but it landed on *keeping* the tenet — and the tenet is already written down. A decision doc would mostly re-narrate a debate whose conclusion the HLD states more briefly.
+
+Where I'd change my answer: if you expect the offline constraint itself to come under pressure — a plant network reaching the production area, or the inventory team pushing for a central index — then the live decision isn't the backend, it's the tenet, and a project-level doc at `docs/decisions/` on offline-only operation would be worth writing. That one would stay live for a cold reader. Say if that's on the horizon and I'll draft it instead.
+
+Otherwise the row stands as written, and the five Phase 2 questions are still waiting on you.

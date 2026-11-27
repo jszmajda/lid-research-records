@@ -1,0 +1,11 @@
+**F1 — The queue conflicts with the project’s promise.** The HLD says a submitted job is a promise: members should be able to upload and walk away, with overnight printing as a goal. But `docs/intent/job-queue/job-queue-design.md:14` says accepted, undispatched jobs disappear on restart, even though its context anticipates unattended updates and power blips. Keeping the G-code file on disk makes resubmission cheaper; it does not preserve the accepted job’s queue position or ensure anyone knows to resubmit. Under *tenet cascade*—the design should carry out the project’s stated priorities—this deserves an explicit choice about the reliability promise.
+
+**F2 — The tradeoff isn’t recorded.** The queue design chooses in-memory storage, but its Decisions & Alternatives table doesn’t explain why persistence was rejected or acknowledge the cost to the job promise. Under *decision capture*—record the reasoning behind a choice a future reader would reasonably question—that omission makes it hard to tell whether job loss is deliberate or an oversight. A decision-table row is likely enough to capture the chosen approach, its alternative, and its accepted cost.
+
+You have three ways to resolve the tension:
+
+1. **Change the design:** persist accepted jobs and their ordering so they can be recovered after restart. The design should define when acceptance becomes durable and how recovery handles jobs already being dispatched.
+2. **Keep the in-memory queue and record an exception:** explain in the decision table why simplicity outweighs the promise in this case and explicitly accept the risk of lost queued jobs. That also addresses F2.
+3. **Revise the promise:** change the HLD if “upload and walk away” is stronger than the service is intended to guarantee, then align the queue design with the revised expectation.
+
+Once you choose, I’d use `/linked-intent-dev` to walk the decision through the design, specs, tests, and implementation. Which direction reflects what you want members to be able to rely on?

@@ -1,0 +1,7 @@
+Wrote `docs/decisions/change-delivery-approach.md` and linked it from the HLD's Key Design Decision line.
+
+The doc lays out the choice so a newcomer can re-run it: context (what the choice fixes downstream and the 15-second floor all options clear), five decision elements (latency minor; operational burden and recurring-cost/provider-coupling major; replay fit and failure visibility moderate), the three options each described as its advocate would with per-element verdicts, and a selection that names the trade accepted.
+
+One thing the doc surfaced: the two major criteria point opposite ways. Self-hosted wins on latency and cost/coupling and loses on operational burden — and the accepted tradeoff is exactly that. The vendor-coupling criterion has no governing tenet, while failure visibility does (*Connectivity failures must be visible…*). Your earlier rationale about not tying the board to a vendor still looks like a candidate tenet.
+
+So, back to the question you didn't answer: add a tenet (e.g. *Own the realtime path rather than couple to a vendor*), or leave the existing "self-hosted and managed infrastructure are both permitted" line as the only guidance? Once you answer, I'll fold it in and this Phase 1 stops clean — then we move to the three nodes.

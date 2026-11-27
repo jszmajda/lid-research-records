@@ -1,0 +1,104 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..05ee47b 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its lookup backend is private to the node.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..6d87b9c 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -13,12 +13,82 @@ Technicians enter an equipment serial number and need its calibration date, due
+ 
+ Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, and lookup all belong to this node. Lookup is served from a local embedded SQLite index that each kiosk builds for itself from an imported snapshot. Nothing outside this node sees the index — not its file layout, not its schema, not its query path.
+ 
+-## Snapshot Import
++## Snapshot Storage Layout
+ 
+-Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
++Each imported snapshot owns a directory under the registry data root, named for the snapshot date and a content digest, holding the built index file and a copy of the snapshot manifest. A separate single-line pointer file names the directory of the active snapshot.
++
++```
++registry/
++  active                      <- one line: the active snapshot directory name
++  2026-10-19-a41f/
++    index.db
++    manifest.json
++  2026-10-02-7c08/
++    index.db
++    manifest.json
++```
++
++Activation is the pointer write. Because activation is a single small file write followed by a flush, a reader either sees the previous snapshot or the new one, never a half-built index.
++
++## Index Structure
++
++The index is an SQLite database file with two tables.
++
++`equipment` holds one row per record, keyed by the normalized serial number:
++
++| Column | Notes |
++|---|---|
++| `serial_normalized` | `TEXT PRIMARY KEY` with `BINARY` collation — the lookup key |
++| `serial_raw` | the serial exactly as the snapshot spelled it, for display |
++| `description` | equipment description |
++| `calibration_date` | ISO date |
++| `due_date` | ISO date |
++
++`snapshot_meta` holds the snapshot date, the snapshot schema version, and the record count as a single row, so a lookup reads the snapshot date from the same file it reads records from and cannot report a date belonging to a different snapshot.
++
++`BINARY` collation is load-bearing: serial-number punctuation is significant, and case folding is done by the registry's own normalizer rather than by SQLite's `NOCASE`, which folds only ASCII and would make the stored key's behavior depend on the database engine rather than on this design.
++
++## Index Build and Import
++
++Import runs as a foreground operation with progress, and is not held to the lookup latency goal.
++
++1. Verify the manifest signature with the bundled public key.
++2. Reject an unsupported schema version.
++3. Create a new snapshot directory and build `index.db` inside it: stream the NDJSON records, normalize each serial, and insert. The primary key makes duplicate serial numbers surface as an insert conflict during the build rather than needing a separate pass over 90,000 records.
++4. Write `snapshot_meta`.
++5. Write the pointer file naming the new directory.
++
++Any failure before step 5 leaves the pointer file untouched, so the previously active snapshot stays active. The abandoned directory is removed; if removal itself fails, the directory is left in place and reported, because an orphaned directory no pointer names is inert.
++
++Retain the previously active snapshot directory after a successful activation, and prune older ones. Retaining one generation means a bad-but-valid snapshot can be backed out by rewriting the pointer, without a USB trip.
+ 
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Open the active snapshot's index read-only, and query by primary key with a prepared statement. A primary-key lookup against 90,000 rows is far inside the 250 ms goal and does not depend on holding the snapshot in memory, which matters on a 4 GB kiosk.
++
++Normalize the query serial with the same normalizer the build used — trim surrounding whitespace, uppercase ASCII letters, leave punctuation untouched. Build-time and query-time normalization being one function is an invariant of this design: if they diverge, records become unreachable without any error surfacing.
++
++Return the snapshot date from `snapshot_meta` on every result, including `NotFound`.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index built on the kiosk | On-site HTTPS directory service; managed search service | Both alternatives put a network call on the lookup path, which the HLD tenets forbid outright. Among local options, SQLite gives primary-key lookup without loading the snapshot into RAM. |
++| Index residency | On-disk SQLite file, read-only connection | In-memory hash map built at startup; linear scan of the NDJSON file | A 150 MB snapshot in a hash map competes with everything else on a 4 GB kiosk, and startup would pay a full rebuild; a linear scan misses the 250 ms goal. |
++| Serial-number key collation | `BINARY`, with case folding in the registry's normalizer | SQLite `NOCASE` collation | Keeps the key's meaning owned by this design rather than by engine collation behavior, and keeps punctuation significant. |
++| Snapshot activation | Rewrite a pointer file naming the snapshot directory | Build into a staging path and rename over the live index | A pointer keeps the previous snapshot intact and addressable, which makes rollback a pointer rewrite rather than a re-import. |
++| Snapshot retention | Keep the active snapshot and one previous generation | Keep only the active snapshot; keep all imported snapshots | One generation buys rollback without the imported snapshots growing unbounded on a kiosk disk. |
++| Duplicate-serial detection | Primary-key conflict during the index build | Separate validation pass before the build | One pass over the records instead of two, on the operation that already dominates import time. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Lookup backend is a local embedded SQLite index — see Decisions & Alternatives.
++
++### Deferred
++
++1. Whether a rollback to the retained previous snapshot is a technician-facing action or a service action.

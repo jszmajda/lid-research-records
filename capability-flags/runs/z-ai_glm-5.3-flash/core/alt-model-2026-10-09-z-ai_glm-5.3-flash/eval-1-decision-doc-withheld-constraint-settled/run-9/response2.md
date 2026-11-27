@@ -1,0 +1,3 @@
+Overkill — keep it as the table row it already has. The test for a decision doc is whether a cold reader of the *landed* design would re-litigate the choice, and here they wouldn't: with the no-runtime-network tenet fixed, the HTTPS directory and managed service aren't credible contenders (both violate it), so SQLite is effectively settled by an inherited constraint — exactly the case the skill says to record as a row, or nothing. The row in `registry-design.md` preserves the alternatives and rationale anyway, and the choice affects only this node's internals.
+
+Still waiting on your call for the two open items from my last message: the lookup-before-first-snapshot behavior (options a/b/c), and whether REG-006 stays a tested spec.

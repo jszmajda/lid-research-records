@@ -1,0 +1,1 @@
+Now let me read all the design docs and specs, and check for the arrows overlay, decisions dirs, and code files.

@@ -1,0 +1,6 @@
+Done. Two changes:
+
+- **`docs/decisions/self-hosted-websocket-delivery.md`** — the decision doc. It lays out the context (scale, freshness goal, one authoritative revision), the gates and weighted criteria a future reader needs to re-run the judgment, each option in its strongest honest form with per-element analysis, and the selection naming the tenet it turns on ("self-hosted and managed infrastructure are both permitted"). It also closes with the three downstream obligations for change store, delivery, and browser sync — including the opening-time burst criterion I surfaced as a latent factor, which doesn't move the decision but must be carried explicitly into the delivery node's design. Written to be read cold, with no trace of our conversation.
+- **`docs/high-level-design.md`** — the Key Design Decisions row now links to the decision doc.
+
+One thing to sanity-check as you read: the doc's Selection section explicitly names connection-owning operations as the one *weak* fit you're accepting, and notes the hosted option stays re-litigable if that operational bill proves heavier than the doc weighs. If that reads as the right shape of the tradeoff to you, we're set — say the word and we'll start the three nodes (change store, delivery, browser sync).

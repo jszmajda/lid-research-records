@@ -1,0 +1,10 @@
+The decision doc is written at `docs/intent/record-store/decisions/concurrent-visit-edits.md` and linked from the LLD's Decisions row.
+
+It records, cold-readable:
+
+- **Elements** — three gates (no silent discard, no inferred scientific authority, coordinatable by two people) and four weighted criteria, with *preserve whole-visit scientific intent* and *merge-rule maintenance burden* as the majors the decision turns on.
+- **Both options at their strongest** — whole-visit revisions and field-aware three-way merge, each described as its advocate would, with worked examples (the observer-name/missing-species case vs. the identification-and-cover-estimate case) and per-element verdicts, including where field-aware merge only *borderline-passes* the no-inferred-authority gate.
+- **Selection** — why the review-volume advantage doesn't buy enough to justify merge rules that can silently combine scientifically related edits; what committing forecloses; and the downstream obligations written as accommodations: tablet-sync must retain base revision IDs, resend full payloads, and represent pending-competing state, while review-export must treat unresolved visits as export-ineligible, provide side-by-side comparison, and keep resolved-vs-retained provenance.
+- **A named escape hatch** — if review volume proves unmanageable, the live fallback is field-aware merge restricted to structurally unambiguous fields (e.g., notes), not the full version.
+
+One housekeeping note: the four edge-case probe items from the design review (identical-payload competitors, resolving under continued arrivals, client timestamp/device ID, resolution idempotency) are still deferred in the LLD's Open Questions — we can settle them now or when drafting the EARS specs, which is the next phase whenever you're ready.

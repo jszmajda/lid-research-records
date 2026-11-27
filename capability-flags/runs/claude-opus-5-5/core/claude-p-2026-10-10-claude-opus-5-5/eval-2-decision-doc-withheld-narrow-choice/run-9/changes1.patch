@@ -1,0 +1,51 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..81068ec 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache with 2Q eviction.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..e0339fa 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -23,4 +23,32 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Eviction
++
++The cache evicts with 2Q, so that a long screening's one-use sheets cannot displace the comparison sheets editors keep returning to. Every cached sheet belongs to exactly one of two queues:
++
++- **First-use queue** — FIFO, ordered by admission. Holds sheets not yet shown to be reused. Its share of the cache is 3 GiB (25% of the 12 GiB bound).
++- **Reused queue** — LRU, ordered by most recent request. Holds sheets shown to be reused. It uses whatever the first-use queue does not.
++
++A third structure, the **evicted-key list**, holds preview keys only — no JPEG data — for the sheets most recently evicted from the first-use queue. It is FIFO and remembers at most 3,000 keys, about half the number of typical sheets the cache holds. Its entries do not count toward the 12 GiB bound.
++
++**Admission.** A completed sheet whose key is in the evicted-key list enters the reused queue at its most-recent end, and the key leaves the list. Any other completed sheet enters the tail of the first-use queue.
++
++**Requests for cached sheets.** A request for a sheet in the reused queue moves it to the most-recent end. A request for a sheet in the first-use queue leaves its position unchanged. Reuse is therefore demonstrated only by a request that arrives after the sheet has left the first-use queue: the browser's retry after a pending response, several editors collecting one shared job, and a burst of reloads all land while the sheet is still in the first-use queue and promote nothing. The price is one extra render, about 450 ms, the first time a comparison sheet is pushed out by a screening; from then on it sits in the reused queue.
++
++**Choosing a victim.** While room is needed for an admission: if the first-use queue holds more than its share, or the reused queue is empty, evict the oldest first-use sheet and append its key to the evicted-key list, dropping that list's oldest key if it is full. Otherwise evict the least recently requested sheet in the reused queue; its key is not remembered.
++
++The first-use share and the evicted-key list length are worker configuration, read at startup. The values above are starting points to be tuned against pilot traffic. Neither is visible outside the worker.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Eviction policy | 2Q | LRU; frequency-based eviction with aging | Editors alternate long sequential screenings with repeated comparisons of a small set. LRU has the least bookkeeping and follows a project switch fastest, but one long screening evicts the comparison sheets. Aged frequency counts protect popular sheets but add counter maintenance and keep a finished project's favorites after editors move on. 2Q confines one-use sheets to their own queue; the extra queue and its size parameter are accepted as the cost. All three leave the HTTP contract, render queue, and 12 GiB bound unchanged. |
++| What promotes a sheet to the reused queue | A request after eviction from the first-use queue, recognized through the evicted-key list | Promote on any second request while the sheet is still in the first-use queue | Every rendered sheet is requested again within seconds by the browser retrying its pending response. Promoting on that request would move every screened sheet into the reused queue and remove the protection 2Q is chosen for. The worker cannot tell a retry from a deliberate revisit, since both are the same GET. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++1. Whether queue membership and the evicted-key list survive a worker restart, or the worker rebuilds from the JPEG files on disk with every sheet starting in the first-use queue.
++2. Tuned values for the first-use share and evicted-key list length, once pilot traffic is available.

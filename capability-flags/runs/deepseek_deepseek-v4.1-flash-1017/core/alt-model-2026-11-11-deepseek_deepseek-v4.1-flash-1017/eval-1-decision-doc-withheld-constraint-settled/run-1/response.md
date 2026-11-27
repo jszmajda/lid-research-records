@@ -1,0 +1,3 @@
+The registry LLD is finished around the local SQLite index. It now specifies the index schema, normalized lookup key, rebuild-on-import, atomic activation, and failure behavior; the HLD architecture line reflects the selection, and the Decisions & Alternatives table records the local index choice against the on-site directory and managed service. The certificate interface is unchanged.
+
+Please review the LLD, especially the duplicate-normalization rule and the index-replacement failure path. If that looks right, I'll proceed to the EARS update and edge audit.

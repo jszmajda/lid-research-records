@@ -1,0 +1,16 @@
+**Phase 1 complete.** `docs/decisions/change-delivery-transport.md` is written and linked from the HLD's Key Design Decisions entry.
+
+It's built so a newcomer can re-run the judgment, not just read the verdict:
+
+- **Context** states what's at stake — three of the four design nodes are sized around this, so reversing it reshapes the change store's write path, delivery entirely, and the browser sync loop. It also parks the three constraints *all* options satisfy (one authoritative revision, 15-second freshness, both infra styles permitted) as background, so they don't masquerade as reasons.
+- **Seven decision elements**, each able to move the choice: recurring cost and provider coupling (major), connection/reconnect operations owned by the team (major), then delivery-tier availability exposure, latency margin, store read load, where catch-up correctness lives, and time to pilot.
+- **Each option in its strongest honest form** — polling's genuine advantage is that the cursor query *is* the catch-up mechanism, with no second path that could be wrong; the hosted service's is bought-and-operated connection uptime under an SLA. Then a verdict per element.
+- **Selection** shows the actual shape of the trade: both major elements split the field the same way, no option is strong on both, so the decision is which one to concede. Conceding operations is cheaper because it's bounded work inside your control, while coupling is a constraint on two other nodes that outlives any effort — and polling's weak latency and read load are structural, since shortening the interval multiplies reads that already mostly return nothing.
+
+Two things I wrote down as **accepted, not answered**, since they argue against the choice: the 99.5% commitment now rests on a stateful tier you run (every deploy disconnects every watcher), and catch-up correctness spans two paths that must agree — the live push stream and the replayed range. Both land as named obligations on the three nodes.
+
+**One open item, which the doc now has a stake in.** Writing the Selection section made the tenet gap concrete rather than hypothetical. The decision turns on no tenet you have: *"self-hosted and managed infrastructure are both permitted"* admits all three options, so the deciding weight was a preference for owning the realtime path over renting it — recorded nowhere. The doc says so plainly in its closing paragraph. That matters because the same weighing recurs inside the three nodes we're about to write: the connection-state store, the metrics backend, any queue the publication path needs. Right now nothing above those nodes leans them.
+
+So: *"When a capability can be rented or run, prefer running it rather than coupling the board's behavior to a provider's model"* — your project-wide lean, narrower (the realtime path only, leaving metrics and storage genuinely open), or do you want the tenet list left alone and these decided case by case as they come up?
+
+Answer that and I'll start Phase 2 on the first node — I'd suggest the change store, since both delivery and browser sync depend on the replay history it owns.

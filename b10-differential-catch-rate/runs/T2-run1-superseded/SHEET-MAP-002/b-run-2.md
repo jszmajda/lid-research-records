@@ -1,0 +1,13 @@
+# EARS Requirements — Positions Row Keying & Duplicate-Symbol Handling
+
+**SHEET-POS-xxx (Ubiquitous).** When rendering the Positions view tab, the system shall emit exactly one row per distinct `Symbol` present in `Snapshot.positions`, using `Symbol` identity (exact equality, no case-folding or other normalization) as the row key that the marks read-back settle pass depends on. Row order follows the source map's iteration order (a `BTreeMap<Symbol,_>`, i.e. ascending `Symbol` order).
+
+**SHEET-POS-xxx (State-driven).** WHILE iterating positions to render rows, the system shall track the set of symbols already emitted. IF a symbol already emitted is encountered again THEN the system shall not emit the second row — it shall abort the render immediately and return `Err(ViewError::DuplicateSymbolRow(symbol))` carrying the offending `Symbol`, discarding no other error information and producing no partial `ViewTab`. This never silently drops, merges, or overwrites the duplicate row.
+
+**SHEET-POS-xxx (Ubiquitous).** Because `Snapshot.positions` is typed as a `Map<Symbol, _>`, symbol uniqueness is guaranteed by construction for the real API; the duplicate check above is a defensive invariant guard (structurally unreachable via the current data source) retained specifically so a future non-`Map` position source cannot silently double-render a symbol and corrupt the read-back keying.
+
+**SHEET-POS-xxx (Ubiquitous).** `ViewError::DuplicateSymbolRow`'s `Display` implementation shall equal its `Debug` representation verbatim — e.g., for symbol `"AMZN"`, exactly the string `DuplicateSymbolRow("AMZN")` — with no custom/friendlier formatting.
+
+**SHEET-MARK-xxx (Ubiquitous).** The marks settle pass (`read_marks`) shall key every price reading, produced mark, and degraded entry by `Symbol`. The caller-supplied `symbols` slice is treated as the exhaustive, one-entry-per-`Symbol` set of row identities expected on the Positions tab, consistent with the one-row-per-symbol invariant `render_positions` enforces — the settle pass does not itself re-check for duplicates; it relies on the render-time guarantee.
+
+**Not observed / out of scope:** no symbol-string normalization (trim/case-fold/alias-collapse) is performed before keying — only the alias resolution (`resolve_ticker`) transforms symbol→ticker for the `Price`/`Quote Date` formulas, which is a separate concern from row-identity keying.

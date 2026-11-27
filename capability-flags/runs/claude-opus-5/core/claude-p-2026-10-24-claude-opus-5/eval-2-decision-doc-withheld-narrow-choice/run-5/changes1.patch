@@ -1,0 +1,72 @@
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..77e49a1 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. A screening pass can touch more sheets than the cache holds, so the replacement policy's main job is keeping a comparison working set resident while a screening streams past it.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,57 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++## Eviction Policy
++
++Replacement is 2Q: first-use sheets and reused sheets are held in separate queues so a screening pass evicts its own sheets rather than the comparison sheets an editor is working against.
++
++Three structures, all private to the worker:
++
++- **First-use queue** — FIFO, holding sheets admitted on their first render. A sheet served from this queue is not promoted; a screening pass that touches a sheet once, or twice in quick succession, is not yet evidence of reuse.
++- **Evicted-key ledger** — a bounded FIFO of cache keys evicted from the first-use queue, carrying keys only and no JPEG bytes. It is the record that a sheet was recently cached and has been asked for again.
++- **Reuse queue** — LRU, holding sheets whose keys were found in the evicted-key ledger when they were re-requested. Sheets are served and reordered here on every hit.
++
++A completed sheet is admitted to the reuse queue when its key is present in the evicted-key ledger, and to the first-use queue otherwise; admission to the reuse queue removes the key from the ledger. A reference is counted once per admission, so concurrent misses sharing one job ticket count as a single reference and cannot promote a one-use sheet.
++
++### Queue sizing
++
++- Cached JPEG data: 12 GiB total, across both sheet-holding queues. Hard bound.
++- First-use queue: 3 GiB of that total. Soft share — it governs which queue eviction draws from, not what may be admitted, so a single large sheet needs no special case.
++- Evicted-key ledger: 3,000 keys. Keys hold no JPEG bytes and do not count against the 12 GiB bound; the oldest key is dropped when a new one arrives at capacity.
++
++At a typical 2 MiB sheet, 12 GiB holds roughly 6,000 sheets, the first-use share roughly 1,500, and the ledger remembers about half a full cache of recently evicted keys.
++
++### Eviction order
++
++Admitting a sheet evicts repeatedly until the sheet fits within 12 GiB:
++
++1. If the first-use queue exceeds its 3 GiB share, evict its oldest sheet and record that sheet's key in the evicted-key ledger.
++2. Otherwise evict the least recently used sheet from the reuse queue and discard its key without a ledger entry.
++
++A request that returns 404, and a render job that fails, leave all three structures unchanged.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache replacement policy | 2Q — separate first-use and reuse queues with an evicted-key ledger | LRU; frequency-based eviction with aging | A screening pass is a sequential scan over more sheets than the cache holds. 2Q confines that scan to the first-use queue, so comparison sheets survive it. LRU lets the scan evict them; aged frequency counts resist the scan but add per-entry counter maintenance and lag an editor's switch to a new project. The extra queues and the first-use share are accepted bookkeeping. |
++| Promotion trigger | A hit on the evicted-key ledger, not a second hit within the first-use queue | Promote on any repeat hit | Repeat hits during one screening pass are not reuse. Requiring the sheet to have aged out of the first-use queue first makes promotion evidence that the working set spans passes. |
++| First-use share enforcement | Soft share steering eviction | Hard admission cap on the first-use queue | Only total cached bytes need a hard bound; keeping the share soft means an oversize sheet is admitted normally and drained by the next eviction. |
++| Reference accounting | One reference per admission | One reference per request | Concurrent requests for one key share a single render job, so counting per request would let a request stampede promote a sheet nobody reuses. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++
++1. ✅ Replacement is 2Q, sized at a 3 GiB first-use share and a 3,000-key ledger.
++
++### Deferred
++
++1. Where surviving cache files land when the worker restarts: the queues and ledger are in memory, so a restart has to either re-admit every surviving sheet as first-use, re-admit into the reuse queue, or discard the cache.
++2. Whether eviction may delete a sheet whose bytes are currently being served, or must wait for in-flight reads to finish.
++3. Whether the 3 GiB share and 3,000-key ledger hold up under observed production mixes, which only pilot measurement can show.
++
++## References
++
++- `docs/high-level-design.md` — cache budget, tenets, and pilot goals.
++- `docs/intent/review-api/review-api-design.md` — the consumer of the fixed preview interface.

@@ -1,0 +1,18 @@
+The decision doc is written at `docs/decisions/change-delivery-route.md`, owned by the HLD, and linked from the Key Design Decisions entry.
+
+It's built so a cold reader can re-run the judgment, not just learn the outcome:
+
+- **Context** states why the route is load-bearing — it dictates the internal structure of three nodes, so reversing it means rewriting them rather than swapping a library. It also clears away what *didn't* decide anything: all three options meet the 15-second goal, 800 browsers, and one-authoritative-revision, and since event updates carry stall IDs and operational statuses rather than customer records, no data-sensitivity rule disqualified the hosted provider. No option was eliminated by a gate; all three were genuinely live.
+- **Decision Elements** — six criteria with explicit weights. The two majors are **vendor independence** (the board is operational infrastructure across forty markets during published event hours, so a provider's pricing or availability change reaches into delivery and browser-sync intent) and **failure visibility**, which I tied to the tenet *connectivity failures must be visible, not mistaken for an unchanged board*. Latency is only moderate, because the goal fixes 15 seconds as sufficient and subsecond is useful rather than required. **Operational burden carried in-house** is marked as cutting against the chosen option, so a reader meets the objection in the criteria rather than discovering it later.
+- **Options** — each described as its advocate would describe it, with per-criterion verdicts. Polling is given its real strengths (strong on cost, burden, and catch-up, since recovery *is* the normal path); the hosted service is given its real strength (strong on burden — it removes the largest share of the work).
+- **Selection** — self-hosted WebSockets wins on both majors; the deciding margin over polling is latency, stated plainly as a preference for immediacy during opening-time bursts rather than a requirement, and weighed knowing polling is better on burden. It says outright that the chosen option is weak on burden and is taken over the option that scores strongest there, and that the hosted service was rejected because relieving that burden costs recurring fees and couples two nodes to a provider. It records what commitment forecloses (stateless-server simplicity; delivery now holds per-browser state, bounded by the single-region pilot non-goal) and the three downstream obligations.
+
+One thing surfaced while writing it. The doc's only tenet citation is failure visibility — vendor independence, its other major criterion, turns on no tenet, because tenet 4 only says self-hosted and managed infrastructure are *both permitted*. A major criterion with no tenet behind it is a signal the project is missing one, which sharpens my earlier question rather than answering it.
+
+So, still open from the last stop:
+
+1. **Tenet 4.** Sharpen to a lean — *"When both meet the freshness and availability goals, prefer infrastructure we operate over a recurring vendor dependency"* — so the criterion this decision leaned hardest on has a tenet behind it for the next choice? Or leave it permissive, and accept that vendor independence is a one-off weighting in this decision rather than a project lean?
+
+2. **The stale lines in `docs/intent/access/access-design.md`** — it still refers to "the still-open change-delivery approach" and says subscription credentials "will belong to the delivery node." Update those two lines now, or leave access alone until the delivery node exists and its credential contract is real?
+
+Then Phase 2 on the three nodes — change store first, unless you'd rather start elsewhere.

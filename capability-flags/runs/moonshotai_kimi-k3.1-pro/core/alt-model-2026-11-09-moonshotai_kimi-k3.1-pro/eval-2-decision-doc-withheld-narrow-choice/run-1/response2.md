@@ -1,0 +1,3 @@
+I don’t recommend a standalone decision doc here. Its scope is confined to the preview cache—the HLD, API, and render queue remain unchanged—and the Decisions & Alternatives row already captures the choice and rationale.
+
+The long debate makes it feel doc-worthy, but the deciding test is whether a future reader would need to re-run the tradeoff, not how contentious it was. I’d keep the table row and put the extra rigor into the 2Q transitions, edge cases, and tests. If you specifically want the full tradeoff preserved despite that, I can write one.

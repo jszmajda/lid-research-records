@@ -1,0 +1,3 @@
+I’d recommend **against a full decision doc**. The choice affects only the preview cache, and a cold reader can understand the trade-off in one Decisions & Alternatives row: **2Q protects reused comparison sheets from one-off screening scans, at the cost of two queues and a size split requiring tuning.** LRU and aged frequency counting remain the rejected alternatives.
+
+The length of the debate doesn’t itself make a durable decision doc necessary. I’d record the row in the preview LLD and keep the design lean—but if you’d still prefer the fuller treatment, I can write it.

@@ -1,0 +1,31 @@
+*Pre-implementation arrow in place; tenet tension and cross-node seams to settle before writing tests.*
+
+**Scorecard**
+- ✓ Intent tree & IDs — clean depth-2 node-as-folder layout (`job-queue`, `printer-registry`) with grep-friendly `QUEUE-*` and `REG-*` prefixes
+- ✓ HLD focus — crisp problem framing, goals, and non-goals with no implementation bloat bleeding upstream
+- ✗ Arrow & status coherence — all 8 EARS specs are marked implemented (`[x]`) while no tests or code exist yet
+- ⚠ Tenet & decision alignment — `job-queue`'s volatile in-memory design works against the HLD's durability promise without a recorded trade-off
+- ⚠ Cross-node & LLD closure — `suspect` printer state, hardware-model protocols, web UI/auth, and several LLD behaviors need spec and boundary alignment
+
+The HLD and both design nodes establish a clear, readable architecture with strong rationale on scheduling and job slugs; the single highest-leverage next step before starting Phase 5 tests is resolving the tension between the in-memory queue and your "submitted job is a promise" tenet (and resetting spec markers to `[ ]` so the implementation gap is visible).
+
+**Findings (10 total · 4 high · 5 medium · 1 low)**
+- **F1 (high):** `job-queue`'s volatile in-memory queue drops accepted overnight jobs during the mini-PC's unattended OS updates and power blips, working against the HLD's "submitted job is a promise" tenet and overnight-print goal with no recorded exception · *tenets capture forward-looking preference* (downstream designs lean the way the HLD's tenets and goals direct, or explicitly record the trade-off)
+- **F2 (high):** Keeping the queue solely in process memory sits in `job-queue-design.md` body prose with no `Decisions & Alternatives` row, even though `printer-registry` already uses SQLite on the same host and `job-queue` writes G-code to disk · *docs carry current intent, written to be read cold* (choices a future reader would question record what alternative was given up and what cost was accepted)
+- **F3 (high):** All 8 specs in `printer-registry-specs.md` and `job-queue-specs.md` carry `[x]` (implemented) markers while no test or source files exist yet in the repository · *coherence is adjacency* (each rung of the arrow accurately reflects its neighbor so future sessions can tell active `[ ]` work from completed code)
+- **F4 (high):** `job-queue` introduces a `suspect` printer state (`QUEUE-003`) and direct startup printer polling (`QUEUE-004`) without cascading to `printer-registry` or defining how `suspect` printers affect dispatch eligibility and recover · *intent attaches at the lowest node that dominates it; cascade within a segment, pause across* (shared printer state and polling boundaries belong where both segments stay coherent)
+- **F5 (medium):** Several explicit LLD behaviors have no corresponding EARS specs — printer registration and 15 s heartbeat polling in `printer-registry`, plus unrepresented-class upload rejection, staff-before-member FIFO ordering, content-hash storage, and base32 job slugs in `job-queue` · *effective intent-tree alignment* (every LLD behavior traces to a spec ID so tests and code have named intent to cite)
+- **F6 (medium):** Key solution edges remain open across both LLDs — how the shared web UI and staff-vs-member identity work, how three hardware models' network APIs map to polling and dispatch, and when content-hashed G-code files are cleaned up on disk · *LLDs close enough of the solution space* (designs narrow enough edges that two agents would build compatible implementations without guessing)
+- **F7 (medium):** HLD tenets in `docs/high-level-design.md` are unordered despite direct tension between job durability and keeping the mini-PC service small, and "no silent reordering" states a single triggered spec (`QUEUE-005`) rather than a general tie-breaker · *tenets capture forward-looking preference* (ordered one-line tie-breakers settle unforeseen choices rather than restating feature rules)
+- **F8 (medium):** Cold-read gaps in `job-queue-design.md` and the HLD — how "printer class" relates to the three hardware models, what startup's rebuilt "picture of the farm" drives when queued jobs are gone, and how resubmitting up to 64 MB from home is "cheap" without a hash-check flow · *docs carry current intent, written to be read cold* (docs stand on their own without context that lived only in the authoring session)
+- **F9 (medium):** `QUEUE-001` scopes the 64 MB cap to "When a member uploads…" even though `staff` is a second uploader class, and `QUEUE-004` polls "each registered printer" without clarifying whether retired printers (`REG-003`) are skipped · *scope disambiguation* (each spec line states its exact actor and state scope so it reads unambiguously via `grep`)
+- **F10 (low):** `CLAUDE.md` carries a minimal pointer rather than the full LID 1.4.0 workflow, bug-fix, cold-read, and `@spec` directive block (reconcilable with `/update-lid`), and spec checkboxes are backtick-wrapped (`` `[x]` `` instead of `- [ ]`) · *minimum surface, maximum discipline* (standard instruction-file and spec formatting keeps agent behavior and coherence checks predictable)
+
+**What was audited**
+- Read fully: `CLAUDE.md`, `docs/high-level-design.md`, `docs/intent/job-queue/job-queue-design.md`, `docs/intent/job-queue/job-queue-specs.md`, `docs/intent/printer-registry/printer-registry-design.md`, `docs/intent/printer-registry/printer-registry-specs.md`
+- Enumerated: 1 HLD, 2 leaf LLDs, 2 spec files, 8 unique EARS spec IDs (`QUEUE-001`–`QUEUE-005`, `REG-001`–`REG-003`), 0 arrow-overlay files (`docs/arrows/` not installed)
+- Code and test linkage: 0 source files, 0 test files, 0 `@spec` references (repository is currently at Phases 1–3)
+
+Want me to walk through all of these findings in detail, focus on the high-priority items before you move into tests and code, or dig into a specific finding together?
+
+If you also have broader questions about using LID on `printfarm` — like how to walk Phases 4–6 from here, where the web UI should sit in the design tree, or when to add `/arrow-maintenance` — I'm happy to help with those too.

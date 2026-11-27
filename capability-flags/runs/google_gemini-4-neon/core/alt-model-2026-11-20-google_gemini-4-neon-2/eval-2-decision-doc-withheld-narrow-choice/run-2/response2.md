@@ -1,0 +1,5 @@
+I'd recommend sticking with the `Decisions & Alternatives` row rather than adding a full decision doc.
+
+The bar for a decision doc is forward-looking from the landed design, not how long the debate ran: it's warranted when a choice stays genuinely live for a cold reader **and** other design nodes are sized around the outcome. Here, 2Q is completely private to the preview worker — `review-api`, the HTTP contract, the render queue, and the 12 GiB disk budget don't change under LRU, aged frequency, or 2Q. The `Decisions & Alternatives` row already gives a future reader the three options and why 2Q won (scan resistance for comparison sheets at the cost of queue bookkeeping and a tunable split).
+
+That said, it's your call — if you still want a standalone decision doc at `docs/intent/previews/decisions/cache-eviction-policy.md` so future maintainers can re-run the full criteria-by-option evaluation, say the word and I'll draft it. Otherwise, let me know how you want to triage the Phase 2 edge-case probe items and whether we're ready for Phase 3.

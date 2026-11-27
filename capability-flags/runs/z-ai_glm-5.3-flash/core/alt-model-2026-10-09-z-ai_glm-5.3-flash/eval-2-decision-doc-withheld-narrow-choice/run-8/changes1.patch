@@ -1,0 +1,78 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 87cae3b..981cc14 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -11,7 +11,7 @@ An authenticated review API checks project membership and forwards preview reque
+ ## Architecture
+ 
+ - Review API: `docs/intent/review-api/review-api-design.md`, with `docs/intent/review-api/review-api-specs.md`. Owns project authorization and the public request boundary.
+-- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache. Its eviction policy remains open.
++- Previews: `docs/intent/previews/previews-design.md`, with `docs/intent/previews/previews-specs.md`. Owns rendering, pending jobs, and a private 12 GiB cache under 2Q eviction.
+ 
+ The review API accesses previews only through the fixed HTTP interface. No other node reads cache files, pins entries, or consumes eviction metadata.
+ 
+@@ -27,7 +27,7 @@ The review API accesses previews only through the fixed HTTP interface. No other
+ - Support 24 active editors on one eight-core preview worker during the pilot.
+ - Limit cached JPEG data to 12 GiB.
+ - Deduplicate concurrent rendering requests for the same preview key.
+-- Return a ready preview or a pending response through the same interface for every eviction policy.
++- Return a ready preview or a pending response through the same interface, regardless of cache eviction policy.
+ 
+ ## Non-Goals
+ 
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..c8c0146 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -7,7 +7,7 @@ prefix: PREVIEW
+ 
+ ## Context
+ 
+-The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The mix varies by production, so no eviction policy is best for every observed workload.
++The worker renders one JPEG contact sheet per clip revision and renderer version. Long screenings introduce many one-use sheets; comparison sessions repeatedly revisit a smaller working set. The eviction policy must protect the small reused working set from being flushed by a single long sequential screening, while keeping bookkeeping inside the worker.
+ 
+ ## Architecture
+ 
+@@ -23,4 +23,29 @@ Resolve the immutable source revision before rendering. The cache key includes c
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++Eviction uses the **2Q** scheme: two ordered queues over the cached sheet entries, distinct from the render queue.
++
++- **A0 (first-use queue, FIFO).** A freshly admitted sheet — a preview key with no prior cached admission — enters at the tail of A0. A0 absorbs sequential screening scans: a long pass over many clips fills A0 and evicts other one-use sheets, leaving reused sheets untouched.
++- **A1 (reuse queue, LRU).** When a request hits an entry still in A0 — evidence the sheet was requested again — that entry is promoted to the head of A1. A hit on an entry already in A1 moves it to A1's head. A1 therefore holds exactly the comparison working set the screenings keep revisiting.
++- **Victim selection.** When eviction is needed (per the 12 GiB admission bound), the victim is the tail of A0; if A0 is empty, it is the LRU tail of A1. Eviction order never reaches an entry whose render job is still pending — such entries do not yet hold cached bytes.
++
++The queue split — the fraction of cache entries A1 may occupy before its own overflow contributes victims — is a tuning parameter, not a partition of the 12 GiB byte budget: the byte bound is enforced exactly as before, and the queues only order candidates for eviction. The initial split is 75% A1 / 25% A0, to be tuned against observed screening logs. All queues and promotion bookkeeping are private to this worker.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|----------|--------|------------------------|-----------|
++| Cache eviction policy | 2Q (A0 FIFO first-use queue + A1 LRU reuse queue) | LRU; frequency-based eviction with aging | LRU lets one long sequential screening evict the actively reused comparison sheets, which is the workload this cache most needs to survive. Aged frequency counts retain repeatedly popular clips but add per-hit counter and aging maintenance and keep stale favorites warm after a project switch. 2Q protects the reused working set from scan floods; its cost — two queues and a tunable split — is contained entirely inside the worker, and the split is tunable against screening logs. |
++
++## Open Questions & Future Decisions
++
++### Resolved
++1. ✅ Eviction policy is 2Q with an initial 75% A1 / 25% A0 queue split; the split is a tuning parameter, not a byte partition.
++
++### Deferred
++1. Tune the A1/A0 split against observed screening logs once the pilot has real traffic.
++2. Whether A0 should keep a non-resident directory of recently evicted keys (classic 2Q variant) to catch a second request arriving just after eviction — defer until hit logs show it matters.
++
++## References
++
++- `docs/intent/previews/previews-specs.md` — EARS specs for this segment.
+diff --git a/docs/intent/previews/previews-specs.md b/docs/intent/previews/previews-specs.md
+index f8e3113..d9c6666 100644
+--- a/docs/intent/previews/previews-specs.md
++++ b/docs/intent/previews/previews-specs.md
+@@ -7,3 +7,7 @@
+ - [ ] **PREVIEW-003**: When concurrent requests miss the cache for the same preview key, the system SHALL return 202 with the same job ticket and a two-second retry interval while one shared render job is pending.
+ - [ ] **PREVIEW-004**: When admitting a completed preview would exceed 12 GiB of cached JPEG data, the system SHALL evict entries before admission so the cache remains within that limit.
+ - [ ] **PREVIEW-005**: When a render job fails, the system SHALL release its deduplication entry so a later request can enqueue a new job.
++- [ ] **PREVIEW-006**: When a completed contact sheet is admitted to the preview worker's private cache for a preview key (clip ID, revision, renderer version) with no prior cached admission, the system SHALL insert that entry at the tail of the A0 FIFO first-use queue.
++- [ ] **PREVIEW-007**: When a cached-sheet request hits an entry in the A0 queue, the system SHALL promote that entry to the head of the A1 LRU reuse queue, removing it from A0.
++- [ ] **PREVIEW-008**: When a cached-sheet request hits an entry already in the A1 queue, the system SHALL move that entry to the head of A1.
++- [ ] **PREVIEW-009**: When the preview worker's private cache must evict entries to stay within its 12 GiB bound, the system SHALL select victims from the tail of A0 first and, while A0 is empty, from the LRU tail of A1.

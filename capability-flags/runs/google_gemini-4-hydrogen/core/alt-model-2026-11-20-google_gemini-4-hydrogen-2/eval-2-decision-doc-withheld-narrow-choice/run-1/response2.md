@@ -1,0 +1,5 @@
+I recommend **keeping it as the `Decisions & Alternatives` row** in `previews-design.md` rather than creating a decision doc.
+
+By LID's earns-its-place test, the bar is whether a **cold reader of the landed design** needs full options-and-criteria machinery — not how long the debate took. Because cache replacement is completely private to `previews` (no other node is sized around it, and the HTTP contract and render queue are unchanged), the table row already settles "why 2Q over LRU and aged frequency?" without adding an extra artifact to maintain.
+
+That said, it's your call — if you want a full decision doc at `docs/intent/previews/decisions/cache-eviction-policy.md` anyway, let me know and I'll write it; otherwise, please triage the Phase 2 probe items above so we can proceed to Phase 3.

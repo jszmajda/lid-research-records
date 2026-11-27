@@ -1,0 +1,3 @@
+A standalone decision doc would likely be overkill. The HLD already requires kiosk-local lookups with no runtime network access, which rules out the HTTPS directory and managed search service. A concise **Decisions & Alternatives** row in the registry LLD can record SQLite, the alternatives, and that rationale.
+
+I’ll keep the Phase 1 HLD review stop here; approve the alignment when you’re ready, and I’ll continue to the registry LLD.

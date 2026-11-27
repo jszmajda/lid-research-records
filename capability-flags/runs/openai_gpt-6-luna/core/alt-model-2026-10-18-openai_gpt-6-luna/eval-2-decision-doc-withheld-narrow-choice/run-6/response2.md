@@ -1,0 +1,3 @@
+I think a decision doc is justified here. The reason isn’t the length of the debate; it’s that the tradeoff remains workload-sensitive: 2Q protects reused sheets from screening scans, while its extra bookkeeping and tunable queue split may be worth revisiting if the workload changes. I’ll record the alternatives and the conditions that could prompt reconsideration in the preview component’s decision doc.
+
+The HLD is still at its required review stop. Does the updated HLD look right, and may I continue with the preview LLD?

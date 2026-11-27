@@ -1,0 +1,5 @@
+Overkill, I'd say. The decision-doc bar is: would a cold reader re-litigate it without the competing options and criteria? Here a cold reader gets two anchors without a doc — the HLD tenet (no runtime network at lookup time) alone eliminates the HTTPS directory and the managed service, and the certificates node treats the backend as invisible, so nothing else gets sized around the choice. The Decisions & Alternatives row in `registry-design.md` already carries the three options and the trade-off, which is all that's left to reconstruct.
+
+The one thing the row doesn't fully capture is that you deliberated longer than the rationale suggests — but "was hard to decide" is explicitly not the trigger; what the design lands as is, and it lands as tenet-settled.
+
+If the kiosk fleet later grows a real connectivity story (say, the lab network becomes always-on), the choice would go live again and a doc would earn its place then. Want me to leave it as the row?

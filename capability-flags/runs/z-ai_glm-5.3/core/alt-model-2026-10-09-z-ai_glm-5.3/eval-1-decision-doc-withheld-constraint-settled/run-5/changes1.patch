@@ -1,0 +1,95 @@
+diff --git a/docs/high-level-design.md b/docs/high-level-design.md
+index 9d564d3..184bd9f 100644
+--- a/docs/high-level-design.md
++++ b/docs/high-level-design.md
+@@ -10,7 +10,7 @@ Accept signed registry snapshots from approved USB media. Expose a stable serial
+ 
+ ## Architecture
+ 
+-- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. Its private lookup backend remains open.
++- Registry: `docs/intent/registry/registry-design.md`, with `docs/intent/registry/registry-specs.md`. Owns snapshot validation and lookup. The lookup backend is a local embedded SQLite index rebuilt from each snapshot.
+ - Certificates: `docs/intent/certificates/certificates-design.md`, with `docs/intent/certificates/certificates-specs.md`. Uses the fixed registry result type and writes PDFs to a user-selected local directory.
+ 
+ ## Tenets
+diff --git a/docs/intent/registry/registry-design.md b/docs/intent/registry/registry-design.md
+index afaf373..2c2f003 100644
+--- a/docs/intent/registry/registry-design.md
++++ b/docs/intent/registry/registry-design.md
+@@ -7,18 +7,73 @@ prefix: REG
+ 
+ ## Context
+ 
+-Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest.
++Technicians enter an equipment serial number and need its calibration date, due date, and equipment description. A signed snapshot contains newline-delimited JSON records, a schema version, a snapshot date, and a signature manifest. Kiosks have no network route during normal operation, so the registry serves every lookup from kiosk-local files.
+ 
+ ## Architecture
+ 
+-Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed regardless of the lookup backend. The certificates node uses only this interface.
++Expose `findBySerial(serial)` returning either `Found(record, snapshotDate)` or `NotFound(snapshotDate)`. Record fields and result types are fixed. The certificates node uses only this interface.
+ 
+-Snapshot validation, backend preparation, and lookup all belong to this node. The lookup backend is not selected yet. Candidates are a local embedded SQLite index, an on-site HTTPS directory, and a managed search service. No certificate behavior or interface change is part of that selection.
++Snapshot validation, index preparation, and lookup all belong to this node. The lookup backend is a local embedded SQLite database: each kiosk rebuilds its index from a snapshot when one arrives, and lookups are point queries against that index.
+ 
+ ## Snapshot Import
+ 
+ Verify the signature using a bundled public key, reject unsupported schema versions, and validate record serial numbers for uniqueness. Prepare the new snapshot without exposing partially imported records. Activate it only after all validation succeeds. An import failure leaves the previous snapshot active and reports a useful error.
+ 
++Import and activation proceed in stages:
++
++1. Read the snapshot from the USB medium and verify its signature manifest against the bundled public key.
++2. Reject schema versions outside the supported set.
++3. Build a fresh index in a staging file (`registry.staging.db`), inserting all records in a single transaction. A primary-key violation during insertion reports the duplicate serial and aborts the import.
++4. Commit the staging file, then atomically rename it over the active index file (`registry.db`). Rename is the activation point: before it, all lookups see the previous snapshot; after it, all lookups see the new one.
++5. On failure at any stage, delete the staging file and report the failing stage; the active index is untouched.
++
++Staging files left behind by a crash mid-import are deleted at component startup; they are never read.
++
++## SQLite Index
++
++The active index is a single SQLite database file holding one table for records and one row of snapshot metadata:
++
++```sql
++CREATE TABLE records (
++  serial_key       TEXT PRIMARY KEY,  -- normalized serial (lookup key)
++  serial_display   TEXT NOT NULL,     -- serial as received in the snapshot
++  description      TEXT NOT NULL,
++  calibration_date TEXT NOT NULL,
++  due_date         TEXT NOT NULL
++);
++CREATE TABLE snapshot_meta (
++  schema_version INTEGER NOT NULL,
++  snapshot_date  TEXT NOT NULL
++);
++```
++
++- **Normalization.** The same normalization — trim surrounding whitespace, uppercase ASCII letters, keep all punctuation — is applied to each record's serial at import time (stored as `serial_key`) and to the query serial in `findBySerial`. Storing the normalized form makes the index consistent with case-insensitive lookup.
++- **Uniqueness.** The primary key on `serial_key` enforces uniqueness on the normalized serial. Two raw spellings that differ only in whitespace or ASCII case normalize to one lookup key; storing both would make a lookup ambiguous, so they are rejected as duplicates.
++- **Snapshot date.** Every result — Found or NotFound — carries the `snapshot_date` read from `snapshot_meta` of the active index.
++- **Rebuild, not mutate.** Each import rebuilds the index from scratch into staging. The active file is only ever replaced wholesale; kiosk lookups never write to it. At the supported size (90,000 records, snapshots up to 150 MB) a full rebuild takes seconds, and imports are rare.
++
+ ## Lookup Behavior
+ 
+-Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists. The concrete index and query path remain open pending the user's choice.
++Normalize surrounding whitespace and uppercase ASCII letters before lookup. Serial-number punctuation remains significant. Return the snapshot date even when no matching record exists.
++
++Lookups open the active database read-only (SQLite URI `mode=ro`) per call and run an exact point query on `serial_key`. Opening per call keeps activation immediately visible and avoids holding a handle on a replaced file; open-plus-query cost is far inside the 250 ms budget.
++
++## Decisions & Alternatives
++
++| Decision | Chosen | Alternatives Considered | Rationale |
++|---|---|---|---|
++| Lookup backend | Local embedded SQLite index | On-site HTTPS directory; managed search service | The HLD tenets require lookups to complete from kiosk-local files with no runtime network access, which eliminates both networked options; SQLite additionally gives predictable point lookups within the 250 ms budget with no service to operate. Cost: each kiosk validates and rebuilds its own index when a snapshot arrives — contained inside this node, and the certificate interface is unchanged. |
++| Index activation | Build in a staging file, atomically rename over the active file | In-place table swap inside one database; pointer file selecting among per-snapshot databases | Atomic rename gives all-or-nothing activation with no window of partial exposure, and a failed build leaves the active file untouched. |
++| Uniqueness scope | Enforced on the normalized serial key | Uniqueness on the raw serial text | Lookup is defined on normalized serials; duplicates must be judged on the same form a query takes, or two records could claim one lookup key. |
++| Read path | Read-only connection opened per lookup | Long-lived writable connection | Read-only access prevents accidental mutation of the active index and makes activation visible on the next call; open cost is negligible against the 250 ms budget. |
++
++## Open Questions & Future Decisions
++
++### Deferred
++
++1. Index retention: whether to keep the previous snapshot's index file after activation (e.g., for instant rollback) rather than letting rename replace it — not needed until a rollback requirement exists.
++
++## References
++
++- HLD: `docs/high-level-design.md` (tenets: kiosk-local lookups, USB-only updates; goals: 250 ms lookups, 90,000 records, 150 MB snapshots)
++- Consumer of the interface: `docs/intent/certificates/certificates-design.md`

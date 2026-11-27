@@ -1,0 +1,121 @@
+diff --git a/docs/intent/record-store/record-store-design.md b/docs/intent/record-store/record-store-design.md
+index e1ccf7e..ba87cf5 100644
+--- a/docs/intent/record-store/record-store-design.md
++++ b/docs/intent/record-store/record-store-design.md
+@@ -17,25 +17,91 @@ The record store exposes authenticated submission, current-state retrieval, subm
+ 
+ A visit's scientific fields include observation date, observer list, species cover estimates, and notes. Some edits are unrelated, such as correcting an observer name and adding a missing species. Other edits are related, such as revising a species identification and its cover estimate. The server cannot infer all such relationships from field names.
+ 
+-The selected concurrency policy will define the remaining submission metadata and review operations. They are deliberately not specified yet.
+-
+ ## Submission and Retrieval
+ 
+ Authenticate the submitting worker and validate field types and plot references before accepting a submission. Preserve the original payload separately from any later resolved or combined representation. A retry with the same key and identical payload returns the original acceptance result; reuse with a different payload is rejected.
+ 
+-Retrieval must distinguish a usable current state from unresolved review work. Exactly how those states are represented remains part of the open choice.
++The concurrency policy (whole-visit revisions) defines the submission metadata and retrieval representation below.
++
++## Concurrency Policy: Whole-Visit Revisions
++
++**Decision**: Each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync retains base revision IDs and displays pending competing revisions. Review-export needs a revision comparison workflow and excludes unresolved visits from its export set.
++
++**Rationale**: A bigger review queue is preferred over maintaining merge rules that can combine scientifically related edits without noticing. The team accepts higher coordinator workload to avoid silent semantic combination.
++
++### Decisions & Alternatives
++
++| Decision | Chosen | Alternatives | Rationale |
++|---|---|---|---|
++| Concurrent visit edits | Whole-visit revisions | Field-aware three-way merge | Whole-visit preserves each worker's complete intent as submitted. Field-aware merge reduces review volume but requires maintained rules for scalar fields, observer lists, and species entries — and automatically combined fields can cross scientific relationships the rules do not understand (e.g., changing a species ID without adjusting its cover estimate, or adding a species that conflicts with an existing one). The team prefers visible review work over invisible semantic combination. |
++| Revision numbering | Sequential integers per visit | UUIDs, timestamps | Sequential integers are compact, human-readable in review, and make "base_revision" equality checks trivial. |
++| Head selection among competitors | Highest revision number (most recent arrival) | Coordinator picks during resolution | Arrival order carries no authority signal; the head is simply the latest arrival until a coordinator resolves. This keeps the server policy neutral. |
++| Resolution creates new revision | Yes (head + 1) | Overwrite head in place | Creating a new revision preserves the full history including the resolution itself, and keeps the revision chain linear. |
++| Unresolved visits in export | Excluded | Included with flag | The partner receives a reviewed CSV. Unresolved visits have no single authoritative state to export. Excluding them keeps the export contract clean. |
++
++## Submission Envelope
++
++A submission carries:
++- `visit_id` (UUID) — the visit being edited
++- `base_revision` (integer) — the revision number the edit started from
++- `fields` (object) — the complete visit fields: `observation_date`, `observers` (string[]), `species` (array of `{species_id, cover_percent}`), `notes` (string)
++- `idempotency_key` (string) — client-generated, unique per submission attempt
++
++The server accepts a submission if:
++- The `visit_id` exists (or is new)
++- The `base_revision` matches the current head revision of that visit
++- The `idempotency_key` is unused (or matches an identical prior payload)
++
++On acceptance, the server assigns the next revision number (`base_revision + 1`), stores the submission as a new revision, and returns the assigned revision number.
+ 
+-## Open Design Choice: Concurrent Visit Edits
++If `base_revision` does not match the current head, the submission is rejected with the current head revision and its full fields, so the tablet can display the competing revision and let the worker rebase.
+ 
+-OPEN: select the concurrency policy before completing this node's public contract.
++## Current-State Retrieval
+ 
+-Two approaches remain credible:
++`GET /visits/{visit_id}` returns:
++- `head_revision` (integer) — latest accepted revision number
++- `head_fields` (object) — fields of the head revision
++- `unresolved` (boolean) — true if there are other revisions with the same `base_revision` as the head (i.e., competing revisions exist)
++- `competing_revisions` (array) — if `unresolved`, the other revisions sharing the head's `base_revision`, each with `revision`, `fields`, `author_id`, `submitted_at`
+ 
+-- Whole-visit revisions: each edit names its starting revision. Concurrent edits produce competing complete revisions for a coordinator to resolve. This preserves the worker's submitted visit as a unit and needs relatively little merge logic, but even edits to unrelated fields create review work. Tablet-sync would retain base revision IDs and display pending competing revisions. Review-export would need a revision comparison workflow and exclude unresolved visits from its export set.
+-- Field-aware three-way merge: each edit supplies its base state and changes. Disjoint field changes combine automatically; overlapping changes require review. This reduces review volume and gets more visits ready for export, but requires maintained rules for scalar fields, observer lists, and species entries. Automatically combined fields can also cross scientific relationships the rules do not understand. Tablet-sync would retain base snapshots and send structured changes. Review-export would need field-level provenance and a review view for overlapping changes.
++This lets a caller distinguish a clean head from one with unresolved review work.
+ 
+-The choice trades review workload and submission size against implementation burden and preservation of whole-visit intent. Neither approach may discard original submissions. Field-aware merging is not ruled out by a requirement that every combined record receive manual approval.
++## Unresolved-Work Representation
++
++A visit has unresolved review work when multiple revisions share the same `base_revision` (i.e., they were concurrent edits from the same starting state). The set of competing revisions includes the head and any siblings.
++
++The head revision is the one with the highest revision number among the competitors — it represents the most recent arrival but carries no inherent authority.
++
++## Resolution Operation
++
++A coordinator resolves a set of competing revisions by selecting one as the new head and optionally producing a merged field set.
++
++`POST /visits/{visit_id}/resolve` carries:
++- `selected_revision` (integer) — one of the competing revision numbers
++- `merged_fields` (object, optional) — if provided, becomes the field set of a new resolution revision; if omitted, the selected revision's fields become the new head
++
++On acceptance, the server creates a new revision (`head_revision + 1`) with:
++- `fields` = `merged_fields` or the selected revision's fields
++- `author_id` = coordinator ID
++- `resolved_from` = array of the competing revision numbers
++- `resolution_type` = "selected" or "merged"
++
++The new revision becomes the head. The competing revisions remain stored with their original content. `unresolved` becomes false for the visit.
+ 
+ ## Downstream Contract Work
+ 
+-After selection, define the submission envelope, current-state response, unresolved-work representation, and resolution operation here. Tablet-sync will size its local storage and retry state machine around that envelope. Review-export will size its coordinator interface and export eligibility rules around the unresolved-work representation. Both must link back to this node rather than invent their own concurrency semantics.
++### Tablet-Sync Must Accommodate
++
++- **Local draft storage**: Each draft visit must store its `base_revision` (the revision it was fetched from or last synced to). When the worker edits a draft, the entire visit fields are sent on submission — the tablet does not compute diffs.
++- **Submission retry**: The tablet generates an `idempotency_key` per submission attempt (UUID recommended). On network failure, retry with the same key and identical payload.
++- **Rejection handling**: If the server rejects with a newer head revision, the tablet must fetch the competing revision(s), display them to the worker, and let the worker either (a) abandon their edit, (b) rebase by fetching the new head and reapplying their changes, or (c) force-submit as a new concurrent revision (by using the new head as `base_revision` — this creates another competitor).
++- **Offline queue**: Submissions queued during 48-hour offline periods carry their original `base_revision`. They may conflict on sync; the same rejection flow applies.
++- **Catalog sync**: Independent of record-store; the tablet caches the latest site-catalog snapshot.
++
++### Review-Export Must Accommodate
++
++- **Revision comparison screen**: For each visit with `unresolved=true`, present all competing revisions side-by-side with full fields, author, and submission time. The coordinator selects one or manually merges.
++- **Resolution submission**: Call `POST /visits/{visit_id}/resolve` with `selected_revision` and optional `merged_fields`. The server returns the new head revision.
++- **Export eligibility**: Only visits with `unresolved=false` enter the Friday CSV. The export pipeline filters on this flag.
++- **Provenance in export**: The exported CSV row for a resolved visit should carry the resolution revision number and coordinator ID (or at minimum be traceable via the visit's revision history).
++- **No field-level provenance needed**: Unlike field-aware merge, the whole-visit model does not require tracking which fields came from which submission in the exported record — the resolution revision is the authoritative whole.
+diff --git a/docs/intent/record-store/record-store-specs.md b/docs/intent/record-store/record-store-specs.md
+index ece5d8c..51ec2c6 100644
+--- a/docs/intent/record-store/record-store-specs.md
++++ b/docs/intent/record-store/record-store-specs.md
+@@ -6,3 +6,9 @@
+ - [ ] **REC-004**: When edits derived from the same starting visit state are accepted, the system SHALL preserve both original submissions regardless of the concurrency policy's outcome.
+ - [ ] **REC-005**: When a caller retrieves a visit, the system SHALL indicate whether unresolved review work exists for that visit.
+ - [ ] **REC-006**: When a coordinator resolves review work, the system SHALL retain the coordinator's identity and the contributing submission IDs with the resolution outcome.
++- [ ] **REC-007**: When a submission's base_revision matches the current head revision, the system SHALL accept it as the next sequential revision and return the assigned revision number.
++- [ ] **REC-008**: When a submission's base_revision does not match the current head revision, the system SHALL reject the submission and return the current head revision with its full fields.
++- [ ] **REC-009**: When multiple accepted revisions share the same base_revision, the system SHALL mark the visit as having unresolved review work and include all competing revisions in the retrieval response.
++- [ ] **REC-010**: When a coordinator resolves competing revisions by selecting one, the system SHALL create a new revision with the selected revision's fields, record the coordinator as author, and link the contributing revision IDs.
++- [ ] **REC-011**: When a coordinator resolves competing revisions by providing merged_fields, the system SHALL create a new revision with the provided fields, record the coordinator as author, and link the contributing revision IDs.
++- [ ] **REC-012**: When a resolution is accepted, the system SHALL make the new revision the head and set the visit's unresolved status to false.
+\ No newline at end of file

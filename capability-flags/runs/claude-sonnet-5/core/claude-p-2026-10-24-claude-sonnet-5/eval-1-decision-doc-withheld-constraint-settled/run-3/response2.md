@@ -1,0 +1,5 @@
+Overkill — a table row is enough here, already recorded.
+
+The test is whether a cold reader of the *landed* choice would find it non-obvious and want to re-litigate it, not whether the deliberation felt close in the room. Here it doesn't clear that bar: the HLD already states lookup must complete using only kiosk-local files with no runtime network access. That tenet alone eliminates the on-site HTTPS directory and the managed search service — a cold reader hits that constraint first and the SQLite choice falls out as the only compliant option. It's an inherited constraint settling the choice, which is explicitly one of the cases the skill says not to offer a doc for, however long the debate actually ran.
+
+The row I added to the Decisions & Alternatives table in `registry-design.md` captures the "why" in one line, which is all a future reader needs to reconstruct the call.

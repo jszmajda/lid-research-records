@@ -1,0 +1,50 @@
+diff --git a/docs/intent/previews/previews-design.md b/docs/intent/previews/previews-design.md
+index 8674a53..e293ea7 100644
+--- a/docs/intent/previews/previews-design.md
++++ b/docs/intent/previews/previews-design.md
+@@ -19,8 +19,43 @@ Use a FIFO render queue with at most four active rendering jobs. Cache entries a
+ 
+ Resolve the immutable source revision before rendering. The cache key includes clip ID, revision, and renderer version. Concurrent misses for one key share a job ticket. Once rendering completes, subsequent requests can receive the JPEG directly. Failed jobs are removed from the deduplication map so a later request can retry.
+ 
+-## Private Cache
++## Private Cache and Eviction Policy: 2Q
+ 
+ Cached JPEG data may occupy at most 12 GiB. Before admitting a completed sheet, evict enough existing sheets to remain within that bound. Temporary render output is kept separately and removed on completion or failure. Eviction never deletes source footage or changes job-ticket semantics.
+ 
+-The eviction policy is still open. Candidates are LRU, frequency-based eviction with aging, and 2Q. LRU has little bookkeeping and follows recent work quickly but is vulnerable to sequential scans. Aged frequency counts protect repeatedly popular clips but add counter maintenance and can lag a project switch. 2Q separates first-use entries from reused entries, resisting scans at the cost of extra queues and a queue-size parameter. None changes the external interface, queue concurrency, or disk budget.
++Cache entries are managed by a 2Q (Two-Queue) eviction policy. The cache maintains two queues:
++
++- **A1 (first-use queue)**: holds entries on their first admission. A new or reused-after-eviction entry starts here.
++- **A2 (reused queue)**: holds entries that were accessed from A1 and subsequently hit in the cache. An A1 entry moves to A2 on its next cache hit.
++
++On eviction, entries are removed from A1 first. Only when A1 is empty (or cannot supply enough space) does eviction proceed from A2. This design protects entries that represent a working comparison set from being displaced by sequential screening scans that produce one-use sheets.
++
++The size boundary between A1 and A2 is tuned as an A1 target size (e.g., 25% of the 12 GiB limit = 3 GiB). If A1 exceeds its target, entries are moved to A2 or evicted based on age within A1. This permits both policies to coexist on the same stack: A1 uses FIFO-within-target ordering (new entries added at the tail, oldest removed), and A2 uses LRU (reused entry moves to the tail, oldest evicted).
++
++## Decisions & Alternatives
++
++| Area | Decision | Rationale | Alternative(s) Considered |
++|------|----------|-----------|---------------------------|
++| Eviction policy | 2Q (Two-Queue separation) | Protects repeated-use sheets from one-off screening scans; production screening patterns show sharp contrast between long sequential scans and tight comparison loops. The extra queue bookkeeping cost is justified by improved retention of working sets. | LRU (simpler, but vulnerable to scan-induced eviction); frequency-based with aging (better retention but slower adaptation to project switches, requires counter maintenance). |
++| A1 size target | Tunable parameter, initially 25% of cache budget | Allows adaptation to observed workload without code changes. Early tuning data from pilot will inform adjustments. | Fixed at entry count or percentage; should be configurable at runtime. |
++
++## State Transitions and Cache Lifecycle
++
++- **Admission**: On successful render completion, check cache size. If adding the entry would exceed 12 GiB, evict entries from A1 (oldest first by FIFO) until space is available. If A1 is empty or insufficient, evict from A2 (oldest by LRU). Add the entry to A1's tail.
++- **Cache hit**: On a cache hit for a key currently in A1, return the JPEG. Do not promote or move the entry yet (A1 operates as FIFO until it exceeds target). On a cache hit for a key in A2, return the JPEG and move the entry to A2's tail (LRU refresh).
++- **A1 overflow**: When A1 size exceeds its target (after admission), move the oldest A1 entries to A2's tail until A1 is within target. A1 entries become A2 candidates without forcing eviction.
++- **Cache miss**: No entry in either queue. Render job is enqueued (or a waiting request joins an existing job).
++- **Render failure**: Deduplication entry is removed; any queue entry (if partially cached) is discarded.
++
++## Open Questions & Future Decisions
++
++- **Promotion-on-first-A1-hit vs. on-A1-overflow**: Should an A1 entry move to A2 on its first cache hit, or only when A1 overflows? Current design defers to overflow for simplicity; if re-access patterns show we're promoting entries unnecessarily, switch to per-hit promotion.
++- **Startup behavior**: On worker restart, the cache is empty and queues are rebuilt as entries are admitted. Is there a need to persist queue metadata across restarts? Current plan: no persistence, cold start on each restart.
++- **Metrics and monitoring**: What queue depth and eviction rate data should be exposed for dashboard and alerting? Deferred to Phase 5 (tests and observability).
++
++## Implementation Notes
++
++- The preview worker maintains two in-memory deques (or linked lists) for A1 and A2.
++- Each cached JPEG entry carries a key (clip-id, revision, renderer-version), size in bytes, and queue membership flag (A1 or A2).
++- Deduplication map stores one entry per in-flight render key, mapping to a list of waiting HTTP response contexts.
++- Eviction is deterministic: traverse A1 from head (oldest) until 12 GiB bound is satisfied, then A2 from head if needed. No randomization or secondary policies.
