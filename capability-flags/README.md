@@ -5,16 +5,16 @@ These are the raw records behind the first 29 rows of the capability-flag list i
 - **The report:** https://linked-intent.dev/research/judgment-across-models/
 - **Maintainer:** Jess Szmajda.
 
-The list is maintained in the LID repository and gains rows as models are tested. These records cover the 29 configurations named in the report and are not updated.
+The list is maintained in the LID repository and gains rows as models are tested. These records cover the 29 configurations named in the report and are not updated. Every line number in them refers to the LID repository at commit `226b03185e1fa27a5438a31814ea8542fa8c4ff0` (20 November 2026), the last commit to change the list's evidence, and the links below point there. The current list is [on main](https://github.com/jszmajda/lid/blob/main/plugins/linked-intent-dev/skills/linked-intent-dev/references/capability-flags.md).
 
-## The study's files in the LID repository
+## The study's files in the LID repository, at that commit
 
-- [capability-flags.md](https://github.com/jszmajda/lid/blob/main/plugins/linked-intent-dev/skills/linked-intent-dev/references/capability-flags.md): the living list, with its evidence tables and notes.
-- [linked-intent-dev-design.md](https://github.com/jszmajda/lid/blob/main/docs/intent/linked-intent-dev/linked-intent-dev-design.md), section *Capability Flags*: what a flag is, the evidence bar, and the decisions behind it, including the 70% line.
-- [core-design.md](https://github.com/jszmajda/lid/blob/main/docs/intent/linked-intent-dev/core/core-design.md), *What still reaches the human*: the kinds of judgment a flag can name, and what the workflow does with a flag.
-- [alt-model-evals-design.md](https://github.com/jszmajda/lid/blob/main/docs/intent/alt-model-evals/alt-model-evals-design.md): the runner for non-Claude models, its sandbox, outputs, and recording rules.
-- [run_eval.py](https://github.com/jszmajda/lid/blob/main/tools/alt-model-evals/run_eval.py) and [rosters.json](https://github.com/jszmajda/lid/blob/main/tools/alt-model-evals/rosters.json): the runner and its `capability` roster preset.
-- The fixtures, prompts, and assertions: [linked-intent-dev evals.json](https://github.com/jszmajda/lid/blob/main/plugins/linked-intent-dev/skills/linked-intent-dev/evals/evals.json) (core evals 0 to 3) and [lid-coach evals.json](https://github.com/jszmajda/lid/blob/main/plugins/linked-intent-dev/skills/lid-coach/evals/evals.json) (evals 10, 11, 15 and 16). Their `tested_with` lists record the same runs.
+- [capability-flags.md](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/plugins/linked-intent-dev/skills/linked-intent-dev/references/capability-flags.md): the list, with its evidence tables and notes.
+- [linked-intent-dev-design.md](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/docs/intent/linked-intent-dev/linked-intent-dev-design.md), section *Capability Flags*: what a flag is, the evidence bar, and the decisions behind it, including the 70% line.
+- [core-design.md](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/docs/intent/linked-intent-dev/core/core-design.md), *What still reaches the human*: the kinds of judgment a flag can name, and what the workflow does with a flag.
+- [alt-model-evals-design.md](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/docs/intent/alt-model-evals/alt-model-evals-design.md): the runner for non-Claude models, its sandbox, outputs, and recording rules.
+- [run_eval.py](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/tools/alt-model-evals/run_eval.py) and [rosters.json](https://github.com/jszmajda/lid/blob/main/tools/alt-model-evals/rosters.json): the runner, and the `capability` roster preset added after these runs (on main).
+- The fixtures, prompts, and assertions: [linked-intent-dev evals.json](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/plugins/linked-intent-dev/skills/linked-intent-dev/evals/evals.json) (core evals 0 to 3) and [lid-coach evals.json](https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/plugins/linked-intent-dev/skills/lid-coach/evals/evals.json) (evals 10, 11, 15 and 16). Their `tested_with` lists record the same runs.
 
 ## The two skill trees
 
@@ -32,8 +32,36 @@ Both trees' plugin manifests say version 1.4.0.
 - `cells.csv`: the 232 evidence cells (29 configurations times 8 fixtures), the rule each cell is scored by, whether it counts as a miss at the 70% line, and the line of `capability-flags.md` that publishes it.
 - `assertions.csv`: pass counts for every assertion of every fixture, per configuration, with the assertion text.
 - `line-sensitivity.csv`: the results that would change with a 60% or 80% line, or with one run in one cell going the other way.
-- `check.py`: recomputes every cell and the *Output per run* medians from the run records and compares them with a copy of `capability-flags.md`. Run it as `python3 check.py path/to/capability-flags.md`. On the copy on lid `main` dated 2026-11-20, all 232 cells match, and every median matches except the three Gemini 4 rows, whose token records were lost (see below).
+- `size-and-release.csv`: each configuration's release month and size tier as the list records them, and whether it is flagged or listed, with the list's line number.
+- `check.py`: recomputes every cell and the *Output per run* medians from the run records and compares them with a copy of `capability-flags.md`. Run it as `python3 check.py path/to/capability-flags.md`. On `capability-flags.md` at commit `226b0318` (unchanged on `main` as of 27 November 2026), all 232 cells match, and every median matches except the three Gemini 4 rows, whose token records were lost (see below).
 - `stripped-tree.diff`: tree B against its source commit.
+
+### The run prompts
+
+The two runners gave the model the same instructions apart from small differences in wording. Claude Code (`grading/scripts/suite.sh`):
+
+```
+You are executing one eval run of a Claude Code skill. The current directory is the project root — treat it as the entire repository and ignore any ancestor directories' instruction files.
+
+1. Read the skill at <staged copy>/SKILL.md and any references/ files it directs you to. Sibling skills live under <staged copy>/plugins/.
+2. The user's request: "<eval prompt>" Execute it per the skill against the current directory.
+3. Non-interactive run: where the skill would ask the user, take the skill's stated default and note it. Today's date is <date>.
+4. Your final message must be the exact user-facing response and nothing else.
+```
+
+opencode (`tools/alt-model-evals/run_eval.py` at `1e7ef1a` and `919c4b4`):
+
+```
+You are executing one eval run of an agent skill. The current directory is the project root; treat it as the entire repository.
+
+1. Load the skill named `<skill>` with your skill tool, and read any references/ files it directs you to. Sibling skills live under <staged copy>.
+2. The user's request: "<eval prompt>"
+   Execute it per the skill against the current directory, making any file changes yourself.
+3. This run is non-interactive. Where the skill would ask the user, take the skill's stated default, and state in your final response which defaults you took. Today's date is <date>.
+4. Your final message must be the exact user-facing response and nothing else.
+```
+
+For an eval with a scripted second turn, both replace step 3 with: "The user will read your final message and reply. Where the skill directs you to ask the user, ask in your final message and stop; do not answer for them."
 
 ### `runs/`
 
@@ -54,6 +82,7 @@ Runs that didn't finish (a timeout or a host error) keep only `timing.json`. So 
 - `keys/`: the blind keys for the eight grading rounds (round 8 in four parts, `grade-roster8a` to `8d`). Each maps a blind ID to its run in `runs/`, or says why the run isn't published.
 - `blind/`: what the graders wrote, by round and blind batch: `evals.json` (the prompts and assertion text the grader was given), `grades.json`, and, where a batch was regraded, the superseded grades. `blind/grade-roster2/regrade/` holds round 2's regrade of some round-1 assertions with revised wording; no evidence cell uses those assertions.
 - `controls.csv`: every control planted in a blind batch: a run from an earlier round with a known grade on the assertion it was chosen for. It says which assertion that was, what was expected, what the grader gave, and whether they matched. From round 3 on, 190 of the 192 planted controls came back as expected. Round 2 regraded 8 round-1 runs as its check, and round 1 mixed in 2 pilot runs with no recorded grade.
+- `untested-rule-runs.csv`: the 16 first-round runs whose reply applied the empty list's rule for untested models ("treat every flag as applying"), found by a phrase search of the tree-A replies, with the sentence that shows it. The list's notes count 17. Leaving these 16 out changes no result.
 - `grader-models.csv`: the model each grader ran on, for the batches whose grading-session records survive (rounds 6 to 8).
 - `prompts/`: the grader prompts.
 - `scripts/`: the scripts that launched the runs and built, tallied, and de-blinded the blind batches. Local paths in them are replaced with placeholders such as `<workspace>`, `<scratch>`, and `<lid-evalstrip-1109 checkout>`.

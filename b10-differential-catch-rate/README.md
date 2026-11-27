@@ -37,7 +37,7 @@ The headline arm: Claude Sonnet in fresh sessions. This is the execution that wa
 
 ### `runs/T2-run1-superseded/` (175 files)
 
-An accidental first execution of the same arm, which was superseded and not scored. It holds the same 24 control units, with the same seven files each, and seven empty files directly in the folder (`a-run-1.md` to `a-run-3.md`, `b-run-1.md` to `b-run-3.md`, `classification.json`), left by a write that had no unit name. Comparing it with `runs/T2/` shows how much a unit's classification code moves between executions.
+The same arm ran twice after a workflow resume: the second execution, in `runs/T2/`, was scored, and this first one was kept as superseded. It holds the same 24 control units, with the same seven files each, and seven empty files directly in the folder (`a-run-1.md` to `a-run-3.md`, `b-run-1.md` to `b-run-3.md`, `classification.json`), left by a write that had no unit name. Comparing it with `runs/T2/` shows how much a unit's classification code moves between executions: 3 of the 24 control units (`SHEET-FORMULA-002`, `SHEET-MARK-008`, `SHEET-PUB-004`) go from BD-DRIFT to B-ONLY-DRIFT.
 
 ### `runs/T2CAP/` (112 files) and `runs/EXP-HAIKU/` (112 files)
 
@@ -78,6 +78,6 @@ Nothing in the copied folders was withheld. Some of the experiment's raw output 
 ## Notes for reading the outputs
 
 - The file lists given to the B-direction runs and the classifier named the audit tree each file came from: `{scratch}/audit-baseline/...` for a control unit, `{scratch}/audit-<seed ID>/...` for a seed unit, where the seed ID gives the kind of seed and the requirement. Some B-direction runs echo those paths, and a few use the seed ID as a heading. An auditor could therefore tell a control unit from a seed unit, though not what was planted.
-- The outputs from Haiku's sessions sometimes print their working directory, which was the notebook's `answer-key` folder, where the sealed key was kept. The prompts told every session to read only its inputs, and none of the outputs shows a session opening the key. The other Claude arms ran from the same harness and may have shared that working directory.
+- Eight of Haiku's outputs print the path of the notebook's `answer-key` folder, where the sealed key was kept, as their working directory, and one of them names a file path inside it, for a file that doesn't exist there. The prompts told every session to read only its inputs, and none of the outputs shows a session reading or writing anything in that folder. The other Claude arms ran from the same harness and may have shared that working directory.
 - The B-direction runs were given the files that cite the requirement, test files included. LID's shipped skill leaves test files out of the B direction by default.
 - The exact Claude model versions were not recorded.

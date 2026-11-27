@@ -3,7 +3,10 @@
 Usage: python3 check.py path/to/capability-flags.md
 
 capability-flags.md is plugins/linked-intent-dev/skills/linked-intent-dev/references/capability-flags.md
-in https://github.com/jszmajda/lid. Each run's grading.json names the cell it counts toward and
+in https://github.com/jszmajda/lid, at commit 226b03185e1fa27a5438a31814ea8542fa8c4ff0, the last commit to
+change its evidence and the one every line number in these records refers to:
+https://github.com/jszmajda/lid/blob/226b03185e1fa27a5438a31814ea8542fa8c4ff0/plugins/linked-intent-dev/skills/linked-intent-dev/references/capability-flags.md
+Each run's grading.json names the cell it counts toward and
 whether it passed; this script tallies them, compares every cell in the file's three evidence
 tables, and recomputes the Output per run medians from timing.json (opencode) or usage.json
 (Claude Code), counting both turns. Standard library only.

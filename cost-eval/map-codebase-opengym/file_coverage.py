@@ -7,11 +7,15 @@ The project's own CLAUDE.md, to which the draw appended LID's block, is left out
 
 The source files are the files git tracks at the pin, outside catalogue/ (exercise data and media), whose
 extension is one of SOURCE, and whose path doesn't look like a test (TEST). For each draw, a file counts as named:
-  - "by file name" when its file name, extension included, appears anywhere in the map's text;
+  - "by whole name" when its file name, extension included, appears in the map's text as a whole name, not
+    run on into a longer one (so index.js isn't credited by index.jsx);
   - "by stem" when that, or its name without the extension, appears as a whole word.
-The stem count is generous: short stems ("index", or a locale's "de") match ordinary words, so it overstates.
-Neither count credits a file that the map covers only by a glob or a directory name, so the file-name count
-understates. Read the two as rough bounds, not as a measure of how well the map covers a file.
+These are two rough figures, not bounds; each both over- and under-credits:
+  - Both match on the file name alone, and 129 of the 936 files share their name with another file, so one
+    mention credits every file of that name.
+  - The stem figure credits more: short stems ("index", or a locale's "de") match ordinary words.
+  - Neither credits a file that the map covers only by a glob or a folder name.
+Naming a file is not the same as describing it.
 """
 
 from __future__ import annotations
@@ -51,14 +55,14 @@ def main() -> None:
         for f in files:
             name = f.rsplit("/", 1)[-1]
             stem = name.rsplit(".", 1)[0]
-            if name in text:
+            if re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", text):
                 by_name += 1
                 by_stem += 1
             elif re.search(r"(?<![\w])" + re.escape(stem) + r"(?![\w])", text):
                 by_stem += 1
         label = m.parent.name if m.name == "map" else m.name  # a draw's records keep its map in <draw>/map/
-        print(f"{label}: named by file name {by_name}, by stem {by_stem}; "
-              f"named nowhere {len(files) - by_name} by file name, {len(files) - by_stem} by stem")
+        print(f"{label}: named by whole name {by_name}, by stem {by_stem}; "
+              f"named nowhere {len(files) - by_name} by whole name, {len(files) - by_stem} by stem")
 
 
 if __name__ == "__main__":

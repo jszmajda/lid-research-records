@@ -1,6 +1,6 @@
 # LID research records
 
-The records behind the reports in the research section of the Linked-Intent Development site, [linked-intent.dev/research](https://linked-intent.dev/research/): run outputs, grades, and tallies that every number in a report traces to.
+The run outputs, grades, and tallies kept from the studies behind the reports in the research section of the Linked-Intent Development site, [linked-intent.dev/research](https://linked-intent.dev/research/). Together with each study's notebook in the LID repository, they are what every number in a report traces to. Some outputs weren't kept when a study ran; each folder's README says which.
 
 They live here, not in the [LID repository](https://github.com/jszmajda/lid), so that people who clone LID to use or contribute to it don't download them. Each study's notebook (its design, plan, and write-ups) stays in the LID repository under `docs/research/`; this repository holds what is too large or too raw for that.
 

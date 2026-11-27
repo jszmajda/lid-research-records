@@ -30,7 +30,7 @@ The trial's results table ([releasedesk-m2e.md](releasedesk-m2e.md), column "Sta
 
 ## Reliance forks: did a stale file mislead the next change?
 
-Each course change has a reliance request: an ordinary request in the overturned rule's area that never mentions the rule, whose correct outcome differs under the current rule and the displaced one. It ran three times per course change (18 forks per approach), each from the trajectory's own snapshot two to five changes after the course change, and was then discarded.
+Each course change has a reliance request: an ordinary request in the overturned rule's area that never mentions the rule, whose correct outcome differs under the current rule and the displaced one (the version the course change retired). It ran three times per course change (18 forks per approach), each from the trajectory's own snapshot two or three changes after the course change (the lag was 3, 2, 2, 3, 3 and 2 for changes 11, 12, 13, 16, 17 and 18), and was then discarded. The design allows two to five; this trial used two or three.
 
 | Approach | Forks | Followed the current rule | Followed the displaced rule | Neither | Forks that read a file the audit judged stale | Of those, followed the current rule |
 |---|---|---|---|---|---|---|
@@ -40,6 +40,8 @@ Each course change has a reliance request: an ordinary request in the overturned
 
 A reliance fork's audit is of the files at change 20, which can be several changes after the fork's snapshot, so "read a stale file" means the file was stale at change 20, not necessarily when the fork read it.
 
+The reliance forks ran with the simulated owner present, as every run did, and the owner holds the current rule. LID's forks averaged about 6.3 owner turns each, against 1.3 for bare's and 2.1 for the checklist's (the Turns columns in [releasedesk-m2e.md](releasedesk-m2e.md), "Working around rot"). So for LID especially, following the current rule can't separate files that didn't mislead the agent from an owner who corrected it.
+
 ## The instrument's own check
 
-Before any approach ran, stale tests were planted in a correct reference build's tests, and the same readers used for intent-from-tests had to name them. At change 20 they caught 83% of planted rules when the tests were read as written, and 33% of the plants carried only by test names once names and comments were replaced, as expected. These figures are tracked in the notebook's log ([log-archive/2026-11.md, lines 148 to 157](https://github.com/jszmajda/lid/blob/main/docs/research/cost-eval/log-archive/2026-11.md?plain=1#L148-L157)).
+Before any approach ran, stale tests were planted in a correct reference build's tests, and the same readers used for intent-from-tests had to name them. At change 20 they caught 83% of planted rules when the tests were read as written, and 33% of the plants carried only by test names once names and comments were replaced, as expected. The reference build wrote a single test file, so the planted tests outnumbered its own tests, which makes them easier to spot than stale tests in a real suite. These figures are tracked in the notebook's log ([log-archive/2026-11.md, lines 148 to 157](https://github.com/jszmajda/lid/blob/main/docs/research/cost-eval/log-archive/2026-11.md?plain=1#L148-L157)).

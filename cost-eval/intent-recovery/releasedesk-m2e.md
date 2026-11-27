@@ -4,7 +4,8 @@ These are the results tables of the cost study's M2e run, copied from the study'
 
 - the table separator rows are corrected so that each table renders;
 - the per-fork listings under "Working around rot" are left out, and only their totals are kept;
-- an oracle item's ID in the symptom-report table is replaced by "one row".
+- an oracle item's ID in the symptom-report table is replaced by "one row";
+- the legend below is edited: its opening line gains a sentence on single trajectories, the bullet on probe versions is reworded to drop internal references, and two bullets are added. One defines the "Stale files (forks)" column, which the generated report leaves undefined; it is read from the code that fills and prints that column, [harness/report.py, lines 599 to 601](https://github.com/jszmajda/lid/blob/main/docs/research/cost-eval/harness/report.py#L599-L601) and [lines 686 to 687](https://github.com/jszmajda/lid/blob/main/docs/research/cost-eval/harness/report.py#L686-L687). The other says which grading version the intent-from-tests rows use.
 
 **What ran.** ReleaseDesk, a small release-approval service, grown from its brief through 20 changes by three approaches, one trajectory each (replicate g-r1): a bare agent (`bare`), the checklist arm (`checklist`), and LID Full (`lid-full`). Changes 11 to 13 and 16 to 18 are changes of direction ("course changes"). Every run used Claude Sonnet 5.5 at medium effort in Claude Code 2.1.323, and the LID runs used LID 1.4.6. Single runs: pilot observations, not evidence.
 
